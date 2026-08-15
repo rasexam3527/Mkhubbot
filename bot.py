@@ -250,6 +250,13 @@ def init_db():
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS ui_state(
+            user_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            home_message_id INTEGER,
+            PRIMARY KEY(user_id, chat_id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_members_joined ON members(joined_at);
         CREATE INDEX IF NOT EXISTS idx_members_creator ON members(creator_id);
         CREATE INDEX IF NOT EXISTS idx_links_created ON links(created_at);
@@ -402,23 +409,18 @@ def local_time(value):
 # ============================================================
 # HOME / AUTO-DETECTED CHANNELS
 # ============================================================
-def home_keyboard():
-    # Owner Home: exactly TWO buttons. No channels/categories/add-course.
-    if owner(OWNER_ID):
+def home_keyboard(uid=None):
+    """Owner sees ONLY Owner Panel + Daily Report."""
+    uid = uid if uid is not None else OWNER_ID
+
+    if owner(uid):
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(
-                    "\u2699\ufe0f OWNER PANEL",
-                    callback_data="owner"
-                ),
-                InlineKeyboardButton(
-                    "\U0001f4ca DAILY REPORT",
-                    callback_data="reports"
-                ),
+                InlineKeyboardButton("âï¸ OWNER PANEL", callback_data="owner"),
+                InlineKeyboardButton("ð DAILY REPORT", callback_data="reports"),
             ]
         ])
 
-    # Non-owner sellers keep their normal course search access.
     with db() as c:
         cats = c.execute(
             "SELECT id,emoji,name FROM categories ORDER BY id"
@@ -436,50 +438,85 @@ def home_keyboard():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if update.update_id is not None and not claim_event(f"start:{update.update_id}"):
+
+    # Do not process the exact same Telegram update twice.
+    if update.update_id is not None and not claim_event(f"start:{update.update_id}", ttl=3600):
         return
 
     if not admin(uid):
         msg = (
-            "\u274c <b>ACCESS DENIED</b>\n\n"
-            "\U0001f512 Aapko is bot ka access nahi diya gaya hai."
+            "â <b>ACCESS DENIED</b>\n\n"
+            "ð Aapko is bot ka access nahi diya gaya hai."
         )
         if update.message:
-            await update.message.reply_text(
-                msg, parse_mode=ParseMode.HTML
-            )
+            await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
         elif update.callback_query:
-            await update.callback_query.answer(
-                "\u274c Access Denied",
-                show_alert=True
-            )
+            await update.callback_query.answer("â Access Denied", show_alert=True)
         return
 
     text = (
-        "\U0001f338 <b>HELLO SELLER FAMILY, KESE HO?</b>\n\n"
-        "\u2728 <b>I AM WIZARD</b> \U0001f338\U0001f495\n\n"
-        "\u2501" * 18 + "\n\n"
-        "\U0001f50e <b>COURSE SEARCH</b>\n\n"
+        "ð¸ <b>HELLO SELLER FAMILY, KESE HO?</b>\n\n"
+        "â¨ <b>I AM WIZARD</b> ð¸ð\n\n"
+        "ââââââââââââââââââ\n\n"
+        "ð <b>COURSE SEARCH</b>\n\n"
         "<b>Telegram ke kisi bhi chat me likho:</b>\n"
         "<code>@YourBotUsername course-name</code>\n\n"
-        "\U0001f449 <b>Search result me course select karo.</b>\n\n"
-        "\U0001f4a1 <i>Fast \u2022 Clean \u2022 Secure Access System</i>"
+        "ð <b>Search result me course select karo.</b>\n\n"
+        "ð <i>Fast â¢ Clean â¢ Secure Access System</i>"
     )
+    keyboard = home_keyboard(uid)
 
-    if update.callback_query:
-        await update.callback_query.answer()
-        await safe_edit(
-            update.callback_query,
+    # For /start, update the existing bot home message instead of creating
+    # another one. This prevents the repeated HOME screen seen in the chat.
+    if update.message:
+        chat_id = update.effective_chat.id
+        old_message_id = None
+        with db() as c:
+            row = c.execute(
+                "SELECT home_message_id FROM ui_state WHERE user_id=? AND chat_id=?",
+                (uid, chat_id)
+            ).fetchone()
+            if row:
+                old_message_id = row["home_message_id"]
+
+        if old_message_id:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=int(old_message_id),
+                    text=text,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True
+                )
+                return
+            except Exception:
+                pass
+
+        sent = await update.message.reply_text(
             text,
-            home_keyboard()
-        )
-    else:
-        await update.message.reply_text(
-            text,
-            reply_markup=home_keyboard(),
+            reply_markup=keyboard,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True
         )
+        with db() as c:
+            c.execute(
+                """
+                INSERT INTO ui_state(user_id,chat_id,home_message_id)
+                VALUES(?,?,?)
+                ON CONFLICT(user_id,chat_id)
+                DO UPDATE SET home_message_id=excluded.home_message_id
+                """,
+                (uid, chat_id, sent.message_id)
+            )
+            c.commit()
+        return
+
+    # Callback / Home button: edit the current message in-place.
+    if update.callback_query:
+        await update.callback_query.answer()
+        await safe_edit(update.callback_query, text, keyboard)
+
 
 async def bot_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cm = update.my_chat_member
@@ -1221,91 +1258,73 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
 
     if not owner(q.from_user.id):
-        await q.answer("\u274c OWNER ONLY", show_alert=True)
+        await q.answer("â OWNER ONLY", show_alert=True)
         return
 
     await q.answer()
 
     text = (
-        "\U0001f4ca <b>REPORT CENTER</b>\n\n"
-        "\U0001f553 <b>LAST 1 HOUR</b>\n"
-        "<i>Last 60 minutes ki complete activity.</i>\n\n"
-        "\U0001f4c5 <b>LAST 24 HOURS</b>\n"
-        "<i>Previous completed day ki detailed activity.</i>\n\n"
-        "\u2501" * 18 + "\n\n"
-        "\U0001f465 <b>Member</b> \u2022 "
-        "\U0001f464 <b>Seller</b> \u2022 "
-        "\U0001f4da <b>Course</b> \u2022 "
-        "\U0001f393 <b>Access Type</b> \u2022 "
-        "\U0001f552 <b>Exact Time</b>"
+        "ð <b>REPORT CENTER</b>\n\n"
+        "ð <b>LAST 1 HOUR</b>\n"
+        "<i>Pichhle 60 minutes ki complete activity.</i>\n\n"
+        "ð <b>LAST 24 HOURS</b>\n"
+        "<i>Kal ke complete day ki detailed activity.</i>\n\n"
+        "ââââââââââââââââââ\n\n"
+        "ð¤ <b>Member</b> â¢ ð¨âð¼ <b>Seller</b> â¢ "
+        "ð <b>Course</b> â¢ ð <b>Access</b> â¢ ð <b>Exact Time</b>"
     )
 
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(
-                "\U0001f553 LAST 1 HOUR",
-                callback_data="rpt:hour"
-            ),
-            InlineKeyboardButton(
-                "\U0001f4c5 LAST 24 HOURS",
-                callback_data="rpt:day"
-            )
+            InlineKeyboardButton("ð LAST 1 HOUR", callback_data="rpt:hour"),
+            InlineKeyboardButton("ð LAST 24 HOURS", callback_data="rpt:day"),
         ],
         [
-            InlineKeyboardButton(
-                "\u2b05\ufe0f OWNER PANEL",
-                callback_data="owner"
-            )
+            InlineKeyboardButton("âï¸ OWNER PANEL", callback_data="owner")
         ]
     ])
 
     await safe_edit(q, text, kb)
 
+
 async def hourly_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not owner(q.from_user.id):
-        await q.answer("\u274c Owner only", show_alert=True)
+        await q.answer("â OWNER ONLY", show_alert=True)
         return
-    await q.answer("Generating 1-hour report\u2026")
 
     start, end = one_hour_range()
-    # Round key to the exact minute, so repeated button taps in the same minute
-    # produce the same key and are rejected.
     end_key = end.astimezone(IST).strftime("%Y%m%d%H%M")
     key = f"hour:{end_key}"
 
-    text = build_report(
-        start,
-        end,
-        "\U0001f4ca \u23f1 LAST 1 HOUR REPORT",
-        key
-    )
-
-    # Display report by EDITING the existing button message.
-    # This avoids creating another report message for the first chunk.
-    chunks = split_report(text)
-    await safe_edit(q, chunks[0])
-
-    # Reserve this report before sending continuation chunks.
+    # Reserve first. If this exact report was already generated, do not
+    # edit/send anything again.
     with db() as c:
         exists = c.execute(
             "SELECT 1 FROM reports_sent WHERE report_key=?",
             (key,)
         ).fetchone()
-        if not exists:
-            c.execute(
-                "INSERT INTO reports_sent(report_key,message_id,sent_at) VALUES(?,?,?)",
-                (key, q.message.message_id, iso(now()))
-            )
-            c.commit()
-            reserved = True
-        else:
-            reserved = False
+        if exists:
+            await q.answer("â¹ï¸ Is 1-hour report ko already generate kiya ja chuka hai.", show_alert=True)
+            return
+        c.execute(
+            "INSERT INTO reports_sent(report_key,message_id,sent_at) VALUES(?,?,?)",
+            (key, q.message.message_id, iso(now()))
+        )
+        c.commit()
 
-    if not reserved:
-        return
+    await q.answer("Generating 1-hour reportâ¦")
 
     try:
+        text = build_report(
+            start, end,
+            "ð ð LAST 1 HOUR REPORT",
+            key
+        )
+        chunks = split_report(text)
+
+        await safe_edit(q, chunks[0])
+
         with db() as c:
             c.execute(
                 "INSERT INTO report_messages(report_key,message_id,created_at) VALUES(?,?,?)",
@@ -1326,55 +1345,50 @@ async def hourly_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     (key, msg.message_id, iso(now()))
                 )
                 c.commit()
+
     except Exception:
         log.exception("hourly report")
         with db() as c:
-            c.execute(
-                "DELETE FROM reports_sent WHERE report_key=?",
-                (key,)
-            )
+            c.execute("DELETE FROM reports_sent WHERE report_key=?", (key,))
             c.commit()
+        raise
 
 
 async def daily_report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not owner(q.from_user.id):
-        await q.answer("\u274c Owner only", show_alert=True)
+        await q.answer("â OWNER ONLY", show_alert=True)
         return
-    await q.answer("Generating daily report\u2026")
 
     start, end, date_key = yesterday_range()
     key = f"day:{date_key}"
-
-    text = build_report(
-        start,
-        end,
-        "\U0001f4ca \U0001f4c5 24 HOURS / DAILY REPORT",
-        key
-    )
-
-    chunks = split_report(text)
-    await safe_edit(q, chunks[0])
 
     with db() as c:
         exists = c.execute(
             "SELECT 1 FROM reports_sent WHERE report_key=?",
             (key,)
         ).fetchone()
-        if not exists:
-            c.execute(
-                "INSERT INTO reports_sent(report_key,message_id,sent_at) VALUES(?,?,?)",
-                (key, q.message.message_id, iso(now()))
-            )
-            c.commit()
-            reserved = True
-        else:
-            reserved = False
+        if exists:
+            await q.answer("â¹ï¸ Is 24-hour report ko already generate kiya ja chuka hai.", show_alert=True)
+            return
+        c.execute(
+            "INSERT INTO reports_sent(report_key,message_id,sent_at) VALUES(?,?,?)",
+            (key, q.message.message_id, iso(now()))
+        )
+        c.commit()
 
-    if not reserved:
-        return
+    await q.answer("Generating 24-hour reportâ¦")
 
     try:
+        text = build_report(
+            start, end,
+            "ð ð 24 HOURS / DAILY REPORT",
+            key
+        )
+        chunks = split_report(text)
+
+        await safe_edit(q, chunks[0])
+
         with db() as c:
             c.execute(
                 "INSERT INTO report_messages(report_key,message_id,created_at) VALUES(?,?,?)",
@@ -1395,14 +1409,13 @@ async def daily_report_button(update: Update, context: ContextTypes.DEFAULT_TYPE
                     (key, msg.message_id, iso(now()))
                 )
                 c.commit()
+
     except Exception:
         log.exception("daily report")
         with db() as c:
-            c.execute(
-                "DELETE FROM reports_sent WHERE report_key=?",
-                (key,)
-            )
+            c.execute("DELETE FROM reports_sent WHERE report_key=?", (key,))
             c.commit()
+        raise
 
 
 async def automatic_daily_report(context: ContextTypes.DEFAULT_TYPE):
@@ -1499,7 +1512,7 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
 
     if not owner(q.from_user.id):
-        await q.answer("\u274c OWNER ONLY", show_alert=True)
+        await q.answer("â OWNER ONLY", show_alert=True)
         return
 
     await q.answer()
@@ -1510,46 +1523,32 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         courses = c.execute("SELECT * FROM courses").fetchall()
 
     text = (
-        "\U0001f451 <b>OWNER CONTROL PANEL</b>\n\n"
-        "\U0001f4ca <b>DASHBOARD</b>\n"
-        "\U0001f465 Active Admins: <b>" + str(len(admins)) + "</b>\n"
-        "\U0001f4da Courses: <b>" + str(len(courses)) + "</b>\n"
-        "\U0001f4e1 Detected Channels: <b>" + str(len(channels)) + "</b>\n"
-        "\u23f1\ufe0f Demo Duration: <b>" + str(demo_minutes()) + " Minutes</b>\n\n"
-        "\u2501" * 18 + "\n\n"
-        "\u2728 <i>Seller, access & report management</i>"
+        "ð <b>OWNER CONTROL PANEL</b>\n\n"
+        "ð <b>Dashboard</b>\n"
+        f"ð¥ Active Admins: <b>{len(admins)}</b>\n"
+        f"ð Courses: <b>{len(courses)}</b>\n"
+        f"ð¡ Detected Channels: <b>{len(channels)}</b>\n"
+        f"â±ï¸ Demo Duration: <b>{demo_minutes()} Minutes</b>\n\n"
+        "ââââââââââââââââââ\n\n"
+        "â¨ <i>Seller â¢ Access â¢ Channel â¢ Report Management</i>"
     )
 
-    kb = [
+    kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(
-                "\U0001f465 VIEW ADMINS",
-                callback_data="editadmins"
-            ),
-            InlineKeyboardButton(
-                "\u2795 ADD ADMIN",
-                callback_data="addadmin"
-            )
+            InlineKeyboardButton("ð¥ VIEW ADMINS", callback_data="editadmins"),
+            InlineKeyboardButton("â ADD ADMIN", callback_data="addadmin"),
         ],
         [
-            InlineKeyboardButton(
-                "\u23f1\ufe0f DEMO TIME",
-                callback_data="showtime"
-            ),
-            InlineKeyboardButton(
-                "\U0001f4ca DAILY REPORT",
-                callback_data="reports"
-            )
+            InlineKeyboardButton("â±ï¸ DEMO TIME", callback_data="showtime"),
+            InlineKeyboardButton("ð DAILY REPORT", callback_data="reports"),
         ],
         [
-            InlineKeyboardButton(
-                "\u2b05\ufe0f BACK TO HOME",
-                callback_data="home"
-            )
-        ]
-    ]
+            InlineKeyboardButton("â©ï¸ BACK TO HOME", callback_data="home"),
+        ],
+    ])
 
-    await safe_edit(q, text, InlineKeyboardMarkup(kb))
+    await safe_edit(q, text, kb)
+
 
 async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1856,43 +1855,50 @@ async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     d = q.data or ""
-    if q.id and not claim_event(f"callback:{q.id}"):
+
+    if q.id and not claim_event(f"callback:{q.id}", ttl=600):
+        await q.answer()
         return
 
-    if d == "home":
-        await start(update, context)
-    elif d == "owner":
-        await owner_panel(update, context)
-    elif d == "reports":
-        await report_menu(update, context)
-    elif d == "rpt:hour":
-        await hourly_report(update, context)
-    elif d == "rpt:day":
-        await daily_report_button(update, context)
-    elif d.startswith("cat:"):
-        await category(update, context)
-    elif d.startswith("course:"):
-        await course(update, context)
-    elif d.startswith("link:"):
-        await create_link(update, context)
-    elif d == "channels":
-        await channels_page(update, context)
-    elif d.startswith("detected:"):
-        await detected_channel(update, context)
-    elif d == "editadmins":
-        await edit_admins(update, context)
-    elif d.startswith("chooseaccess:"):
-        await choose_access(update, context)
-    elif d.startswith("access:"):
-        await set_access(update, context)
-    elif d == "showtime":
-        await show_time(update, context)
-    elif d == "addadmin":
-        await q.answer()
-    elif d == "addcat":
-        await add_category_start(update, context)
-    else:
-        await q.answer()
+    try:
+        if d == "home":
+            await start(update, context)
+        elif d == "owner":
+            await owner_panel(update, context)
+        elif d == "reports":
+            await report_menu(update, context)
+        elif d == "rpt:hour":
+            await hourly_report(update, context)
+        elif d == "rpt:day":
+            await daily_report_button(update, context)
+        elif d.startswith("cat:"):
+            await category(update, context)
+        elif d.startswith("course:"):
+            await course(update, context)
+        elif d.startswith("link:"):
+            await create_link(update, context)
+        elif d == "channels":
+            await channels_page(update, context)
+        elif d.startswith("detected:"):
+            await detected_channel(update, context)
+        elif d == "editadmins":
+            await edit_admins(update, context)
+        elif d.startswith("chooseaccess:"):
+            await choose_access(update, context)
+        elif d.startswith("access:"):
+            await set_access(update, context)
+        elif d == "showtime":
+            await show_time(update, context)
+        elif d == "addcat":
+            await add_category_start(update, context)
+        else:
+            await q.answer()
+    except Exception:
+        log.exception("callback error: %s", d)
+        try:
+            await q.answer("â Temporary error. Bot logs check karo.", show_alert=True)
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -1948,6 +1954,13 @@ def main():
     app.add_handler(CommandHandler("hourlyreport", hourly_command))
     app.add_handler(CommandHandler("clearreports", clear_reports))
     app.add_handler(InlineQueryHandler(inline_search))
+    # Explicit owner/report handlers come BEFORE the generic callback router.
+    # This makes the two owner home buttons reliable and avoids accidental
+    # handling by another callback branch.
+    app.add_handler(CallbackQueryHandler(owner_panel, pattern=r"^owner$"))
+    app.add_handler(CallbackQueryHandler(report_menu, pattern=r"^reports$"))
+    app.add_handler(CallbackQueryHandler(hourly_report, pattern=r"^rpt:hour$"))
+    app.add_handler(CallbackQueryHandler(daily_report_button, pattern=r"^rpt:day$"))
 
     # Bot promotion/admin detection.
     app.add_handler(
@@ -1973,10 +1986,12 @@ def main():
         first=10
     )
 
+    # Automatic daily report: check once every 24 hours, not every minute.
+    # This removes repeated automatic report messages.
     app.job_queue.run_repeating(
         automatic_daily_report,
-        interval=60,
-        first=20
+        interval=86400,
+        first=30
     )
 
     log.info("RAJ COURSE BOT started ONCE. DB=%s | Duplicate protection=ON", DB_PATH)

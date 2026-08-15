@@ -327,12 +327,12 @@ async def my_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TY
             try:
                 await context.bot.send_message(
                     OWNER_ID,
-                    "â <b>CHANNEL AUTO-DETECTED</b>\n\n"
-                    f"ð <b>{esc(getattr(chat, 'title', chat.id))}</b>\n"
-                    f"ð <code>{chat.id}</code>\n"
-                    f"ð¤ Bot status: <b>{esc(new_status)}</b>\n\n"
-                    "Channel à¤à¤¬ bot à¤®à¥à¤ automatically à¤¦à¤¿à¤à¤¾à¤ à¤¦à¥à¤à¤¾.\n"
-                    "Manual <b>Add Course</b> à¤à¥ à¤à¤°à¥à¤°à¤¤ à¤¨à¤¹à¥à¤ à¤¹à¥.",
+                    "\u2705 <b>CHANNEL AUTO-DETECTED</b>\n\n"
+                    f"\U0001f4da <b>{esc(getattr(chat, 'title', chat.id))}</b>\n"
+                    f"\U0001f194 <code>{chat.id}</code>\n"
+                    f"\U0001f916 Bot status: <b>{esc(new_status)}</b>\n\n"
+                    "Channel \u0905\u092c bot \u092e\u0947\u0902 automatically \u0926\u093f\u0916\u093e\u0908 \u0926\u0947\u0917\u093e.\n"
+                    "Manual <b>Add Course</b> \u0915\u0940 \u091c\u0930\u0942\u0930\u0924 \u0928\u0939\u0940\u0902 \u0939\u0948.",
                     parse_mode=ParseMode.HTML,
                 )
             except Exception:
@@ -384,19 +384,19 @@ async def checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ban = getattr(member, "can_restrict_members", None)
 
         await update.message.reply_text(
-            "ð <b>CHANNEL CHECK</b>\n\n"
-            f"ð {esc(getattr(chat, 'title', chat_id))}\n"
-            f"ð <code>{chat_id}</code>\n"
-            f"ð¤ Status: <b>{esc(member.status)}</b>\n"
-            f"ð Invite Users/Add Subscribers: <b>{invite}</b>\n"
-            f"ð« Ban Users: <b>{ban}</b>\n\n"
-            "â Channel database à¤®à¥à¤ save/update à¤¹à¥ à¤à¤¯à¤¾.\n"
-            "Demo auto-remove à¤à¥ à¤²à¤¿à¤ Invite + Ban à¤¦à¥à¤¨à¥à¤ ON à¤¹à¥à¤¨à¥ à¤à¤¾à¤¹à¤¿à¤.",
+            "\U0001f50e <b>CHANNEL CHECK</b>\n\n"
+            f"\U0001f4da {esc(getattr(chat, 'title', chat_id))}\n"
+            f"\U0001f194 <code>{chat_id}</code>\n"
+            f"\U0001f916 Status: <b>{esc(member.status)}</b>\n"
+            f"\U0001f517 Invite Users/Add Subscribers: <b>{invite}</b>\n"
+            f"\U0001f6ab Ban Users: <b>{ban}</b>\n\n"
+            "\u2705 Channel database \u092e\u0947\u0902 save/update \u0939\u094b \u0917\u092f\u093e.\n"
+            "Demo auto-remove \u0915\u0947 \u0932\u093f\u090f Invite + Ban \u0926\u094b\u0928\u094b\u0902 ON \u0939\u094b\u0928\u0947 \u091a\u093e\u0939\u093f\u090f.",
             parse_mode=ParseMode.HTML,
         )
     except Exception as e:
         await update.message.reply_text(
-            "â Channel check failed:\n"
+            "\u274c Channel check failed:\n"
             f"<code>{esc(e)}</code>",
             parse_mode=ParseMode.HTML,
         )
@@ -418,7 +418,7 @@ def home_kb():
 
     buttons = [
         InlineKeyboardButton(
-            f"ð {r['title']}",
+            f"\U0001f4da {r['title']}",
             callback_data=f"channel:{r['chat_id']}"
         )
         for r in channels
@@ -430,8 +430,8 @@ def home_kb():
     # NO Add Course button
     # NO New Category button
     kb.append([
-        InlineKeyboardButton("âï¸ OWNER PANEL", callback_data="owner"),
-        InlineKeyboardButton("ð DAILY REPORT", callback_data="report"),
+        InlineKeyboardButton("\u2699\ufe0f OWNER PANEL", callback_data="owner"),
+        InlineKeyboardButton("\U0001f4ca DAILY REPORT", callback_data="report"),
     ])
 
     return InlineKeyboardMarkup(kb)
@@ -441,18 +441,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not admin(uid):
         if update.message:
-            await update.message.reply_text("â Access denied.")
+            await update.message.reply_text("\u274c Access denied.")
         return
 
     text = (
-        "ð¸ <b>Hello Seller Family, Kese Ho</b>\n\n"
-        "I AM WIZARD ð¸ð\n\n"
-        "ð <b>Course Search</b>\n"
+        "\U0001f338 <b>Hello Seller Family, Kese Ho</b>\n\n"
+        "I AM WIZARD \U0001f338\U0001f495\n\n"
+        "\U0001f50e <b>Course Search</b>\n"
         "Telegram ke kisi chat me likho:\n"
         "<code>@YourBotUsername course-name</code>\n\n"
         "Search result me apna course select karo.\n\n"
-        "ð¡ <b>Channel Auto Detect</b>\n"
-        "Bot ko channel me admin banao â channel automatically yahan aa jayega."
+        "\U0001f4e1 <b>Channel Auto Detect</b>\n"
+        "Bot ko channel me admin banao \u2192 channel automatically yahan aa jayega."
     )
 
     if update.callback_query:
@@ -482,7 +482,7 @@ async def channel_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ).fetchone()
 
     if not r:
-        await edit(q, "â Channel not found.", home_kb())
+        await edit(q, "\u274c Channel not found.", home_kb())
         return
 
     # Refresh permissions every time panel opens.
@@ -498,11 +498,11 @@ async def channel_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ban_ok = bool(r["can_ban"])
 
     text = (
-        f"ð <b>{esc(r['title'])}</b>\n\n"
-        f"ð <code>{esc(r['chat_id'])}</code>\n"
-        f"ð¤ Bot: <b>{esc(r['bot_status'])}</b>\n"
-        f"ð Invite Users: <b>{'ON' if invite_ok else 'OFF'}</b>\n"
-        f"ð« Ban Users: <b>{'ON' if ban_ok else 'OFF'}</b>\n\n"
+        f"\U0001f4da <b>{esc(r['title'])}</b>\n\n"
+        f"\U0001f194 <code>{esc(r['chat_id'])}</code>\n"
+        f"\U0001f916 Bot: <b>{esc(r['bot_status'])}</b>\n"
+        f"\U0001f517 Invite Users: <b>{'ON' if invite_ok else 'OFF'}</b>\n"
+        f"\U0001f6ab Ban Users: <b>{'ON' if ban_ok else 'OFF'}</b>\n\n"
         "Choose an access link below:"
     )
 
@@ -511,14 +511,14 @@ async def channel_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if can(q.from_user.id, "demo"):
         row.append(
             InlineKeyboardButton(
-                "ð Demo Link",
+                "\U0001f517 Demo Link",
                 callback_data=f"link:demo:{chat_id}",
             )
         )
     if can(q.from_user.id, "perm"):
         row.append(
             InlineKeyboardButton(
-                "ð¤ Permanent Link",
+                "\U0001f464 Permanent Link",
                 callback_data=f"link:perm:{chat_id}",
             )
         )
@@ -526,8 +526,8 @@ async def channel_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb.append(row)
 
     kb.append([
-        InlineKeyboardButton("ð Refresh", callback_data=f"channel:{chat_id}"),
-        InlineKeyboardButton("â¬ï¸ Home", callback_data="home"),
+        InlineKeyboardButton("\U0001f504 Refresh", callback_data=f"channel:{chat_id}"),
+        InlineKeyboardButton("\u2b05\ufe0f Home", callback_data="home"),
     ])
 
     await edit(q, text, InlineKeyboardMarkup(kb))
@@ -543,7 +543,7 @@ async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, typ, chat_id = q.data.split(":", 2)
 
     if not can(q.from_user.id, typ):
-        await q.answer("â No access", show_alert=True)
+        await q.answer("\u274c No access", show_alert=True)
         return
 
     # Get current Telegram state. This also refreshes our detected channel.
@@ -553,37 +553,37 @@ async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat = await context.bot.get_chat(int(chat_id))
         await save_detected_channel(context.bot, chat, member)
     except Exception as e:
-        await q.answer("â Channel access error", show_alert=True)
+        await q.answer("\u274c Channel access error", show_alert=True)
         await edit(
             q,
-            "â <b>Channel access à¤¨à¤¹à¥à¤ à¤®à¤¿à¤² à¤°à¤¹à¤¾</b>\n\n"
+            "\u274c <b>Channel access \u0928\u0939\u0940\u0902 \u092e\u093f\u0932 \u0930\u0939\u093e</b>\n\n"
             f"<code>{esc(e)}</code>\n\n"
-            "Bot à¤à¥ à¤à¤¸à¥ channel à¤®à¥à¤ Administrator à¤¬à¤¨à¤¾à¤.",
+            "Bot \u0915\u094b \u0907\u0938\u0940 channel \u092e\u0947\u0902 Administrator \u092c\u0928\u093e\u0913.",
             InlineKeyboardMarkup([
-                [InlineKeyboardButton("â¬ï¸ Home", callback_data="home")]
+                [InlineKeyboardButton("\u2b05\ufe0f Home", callback_data="home")]
             ]),
         )
         return
 
     if member.status not in ("administrator", "creator"):
-        await q.answer("â Bot is not admin", show_alert=True)
+        await q.answer("\u274c Bot is not admin", show_alert=True)
         return
 
     invite_ok = getattr(member, "can_invite_users", None) is True
     ban_ok = getattr(member, "can_restrict_members", None) is True
 
     if not invite_ok:
-        await q.answer("â Invite Users permission OFF", show_alert=True)
+        await q.answer("\u274c Invite Users permission OFF", show_alert=True)
         await edit(
             q,
-            "â <b>Link create à¤¨à¤¹à¥à¤ à¤¹à¥à¤</b>\n\n"
-            f"ð {esc(chat.title)}\n\n"
-            "Telegram â Channel â Administrators â Bot â\n"
+            "\u274c <b>Link create \u0928\u0939\u0940\u0902 \u0939\u0941\u0906</b>\n\n"
+            f"\U0001f4da {esc(chat.title)}\n\n"
+            "Telegram \u2192 Channel \u2192 Administrators \u2192 Bot \u2192\n"
             "<b>Add Subscribers / Invite Users via Link = ON</b>\n\n"
-            "Save à¤à¤°à¤à¥ à¤«à¤¿à¤° Demo/Permanent Link à¤¦à¤¬à¤¾à¤.",
+            "Save \u0915\u0930\u0915\u0947 \u092b\u093f\u0930 Demo/Permanent Link \u0926\u092c\u093e\u0913.",
             InlineKeyboardMarkup([
                 [InlineKeyboardButton(
-                    "â¬ï¸ Back",
+                    "\u2b05\ufe0f Back",
                     callback_data=f"channel:{chat_id}"
                 )]
             ]),
@@ -591,18 +591,18 @@ async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if typ == "demo" and not ban_ok:
-        await q.answer("â Ban Users permission OFF", show_alert=True)
+        await q.answer("\u274c Ban Users permission OFF", show_alert=True)
         await edit(
             q,
-            "â <b>Demo link create à¤¨à¤¹à¥à¤ à¤¹à¥à¤</b>\n\n"
-            f"ð {esc(chat.title)}\n\n"
-            "Demo à¤à¥ à¤²à¤¿à¤ Bot à¤à¥:\n"
-            "â Add Subscribers / Invite Users\n"
-            "â Ban Users\n"
-            "à¤¦à¥à¤¨à¥à¤ permissions à¤à¤¾à¤¹à¤¿à¤.",
+            "\u274c <b>Demo link create \u0928\u0939\u0940\u0902 \u0939\u0941\u0906</b>\n\n"
+            f"\U0001f4da {esc(chat.title)}\n\n"
+            "Demo \u0915\u0947 \u0932\u093f\u090f Bot \u0915\u094b:\n"
+            "\u2705 Add Subscribers / Invite Users\n"
+            "\u2705 Ban Users\n"
+            "\u0926\u094b\u0928\u094b\u0902 permissions \u091a\u093e\u0939\u093f\u090f.",
             InlineKeyboardMarkup([
                 [InlineKeyboardButton(
-                    "â¬ï¸ Back",
+                    "\u2b05\ufe0f Back",
                     callback_data=f"channel:{chat_id}"
                 )]
             ]),
@@ -645,27 +645,27 @@ async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if typ == "demo":
             message = (
-                "ð <b>Access Granted: Demo Pass</b> â³\n"
-                "ââââââââââââââââââ\n\n"
-                f"ð¢ <b>à¤à¥à¤¨à¤² / à¤à¥à¤°à¥à¤¸ à¤à¤¾ à¤¨à¤¾à¤®:</b>\n"
-                f"â {esc(course_name)}\n\n"
-                "ð¥ <b>à¤¯à¤¹à¤¾à¤ à¤¸à¥ à¤à¥à¤µà¤¾à¤à¤¨ à¤à¤°à¥à¤:</b>\n"
-                f"ð <a href=\"{esc(link.invite_link)}\">Open Demo Link</a>\n\n"
-                "ð <b>à¤®à¤¹à¤¤à¥à¤µà¤ªà¥à¤°à¥à¤£ à¤¨à¤¿à¤°à¥à¤¦à¥à¤¶:</b>\n"
-                "â ï¸ à¤¯à¤¹ Demo Joining Link à¤à¥à¤µà¤² 1 à¤¬à¤¾à¤° à¤à¤¾à¤® à¤à¤°à¥à¤à¤¾à¥¤\n"
-                f"â± à¤¸à¤¿à¤¸à¥à¤à¤® join à¤¹à¥à¤¨à¥ à¤à¥ à¤ à¥à¤ <b>{demo_minutes()} à¤®à¤¿à¤¨à¤</b> "
-                "à¤¬à¤¾à¤¦ member à¤à¥ automatically remove à¤à¤°à¥à¤à¤¾."
+                "\U0001f393 <b>Access Granted: Demo Pass</b> \u23f3\n"
+                "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+                f"\U0001f3e2 <b>\u091a\u0948\u0928\u0932 / \u0915\u094b\u0930\u094d\u0938 \u0915\u093e \u0928\u093e\u092e:</b>\n"
+                f"\u279c {esc(course_name)}\n\n"
+                "\U0001f4e5 <b>\u092f\u0939\u093e\u0901 \u0938\u0947 \u091c\u094d\u0935\u093e\u0907\u0928 \u0915\u0930\u0947\u0902:</b>\n"
+                f"\U0001f517 <a href=\"{esc(link.invite_link)}\">Open Demo Link</a>\n\n"
+                "\U0001f4cc <b>\u092e\u0939\u0924\u094d\u0935\u092a\u0942\u0930\u094d\u0923 \u0928\u093f\u0930\u094d\u0926\u0947\u0936:</b>\n"
+                "\u26a0\ufe0f \u092f\u0939 Demo Joining Link \u0915\u0947\u0935\u0932 1 \u092c\u093e\u0930 \u0915\u093e\u092e \u0915\u0930\u0947\u0917\u093e\u0964\n"
+                f"\u23f1 \u0938\u093f\u0938\u094d\u091f\u092e join \u0939\u094b\u0928\u0947 \u0915\u0947 \u0920\u0940\u0915 <b>{demo_minutes()} \u092e\u093f\u0928\u091f</b> "
+                "\u092c\u093e\u0926 member \u0915\u094b automatically remove \u0915\u0930\u0947\u0917\u093e."
             )
         else:
             message = (
-                "ð <b>Access Granted: Permanent Pass</b> ð\n"
-                "ââââââââââââââââââ\n\n"
-                f"ð¢ <b>à¤à¥à¤¨à¤² / à¤à¥à¤°à¥à¤¸ à¤à¤¾ à¤¨à¤¾à¤®:</b>\n"
-                f"â {esc(course_name)}\n\n"
-                "ð¥ <b>à¤¯à¤¹à¤¾à¤ à¤¸à¥ à¤à¥à¤µà¤¾à¤à¤¨ à¤à¤°à¥à¤:</b>\n"
-                f"ð <a href=\"{esc(link.invite_link)}\">Open Permanent Link</a>\n\n"
-                "ð <b>à¤®à¤¹à¤¤à¥à¤µà¤ªà¥à¤°à¥à¤£ à¤¨à¤¿à¤°à¥à¤¦à¥à¤¶:</b>\n"
-                "â ï¸ à¤¯à¤¹ Permanent Joining Link à¤à¥à¤µà¤² 1 à¤¬à¤¾à¤° à¤à¤¾à¤® à¤à¤°à¥à¤à¤¾."
+                "\U0001f48e <b>Access Granted: Permanent Pass</b> \U0001f48e\n"
+                "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+                f"\U0001f3e2 <b>\u091a\u0948\u0928\u0932 / \u0915\u094b\u0930\u094d\u0938 \u0915\u093e \u0928\u093e\u092e:</b>\n"
+                f"\u279c {esc(course_name)}\n\n"
+                "\U0001f4e5 <b>\u092f\u0939\u093e\u0901 \u0938\u0947 \u091c\u094d\u0935\u093e\u0907\u0928 \u0915\u0930\u0947\u0902:</b>\n"
+                f"\U0001f517 <a href=\"{esc(link.invite_link)}\">Open Permanent Link</a>\n\n"
+                "\U0001f4cc <b>\u092e\u0939\u0924\u094d\u0935\u092a\u0942\u0930\u094d\u0923 \u0928\u093f\u0930\u094d\u0926\u0947\u0936:</b>\n"
+                "\u26a0\ufe0f \u092f\u0939 Permanent Joining Link \u0915\u0947\u0935\u0932 1 \u092c\u093e\u0930 \u0915\u093e\u092e \u0915\u0930\u0947\u0917\u093e."
             )
 
         await edit(
@@ -673,7 +673,7 @@ async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message,
             InlineKeyboardMarkup([
                 [InlineKeyboardButton(
-                    "â¬ï¸ Back",
+                    "\u2b05\ufe0f Back",
                     callback_data=f"channel:{chat_id}"
                 )]
             ]),
@@ -683,12 +683,12 @@ async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.exception("invite link creation failed")
         await edit(
             q,
-            "â <b>Telegram link creation failed</b>\n\n"
+            "\u274c <b>Telegram link creation failed</b>\n\n"
             f"<code>{esc(e)}</code>\n\n"
-            "Bot permissions à¤à¤° channel admin status check à¤à¤°à¥.",
+            "Bot permissions \u0914\u0930 channel admin status check \u0915\u0930\u094b.",
             InlineKeyboardMarkup([
                 [InlineKeyboardButton(
-                    "â¬ï¸ Back",
+                    "\u2b05\ufe0f Back",
                     callback_data=f"channel:{chat_id}"
                 )]
             ]),
@@ -782,16 +782,16 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
     if OWNER_ID:
-        kind = "ð DEMO" if link["link_type"] == "demo" else "ð PERMANENT"
+        kind = "\U0001f393 DEMO" if link["link_type"] == "demo" else "\U0001f48e PERMANENT"
         try:
             await context.bot.send_message(
                 OWNER_ID,
                 f"{kind} <b>MEMBER JOINED</b>\n\n"
-                f"ð¤ Seller/Admin: <b>{esc(link['creator_name'])}</b>\n"
-                f"ð Channel: <b>{esc(link['course_name'])}</b>\n"
-                f"ð¤ Member: <b>{esc(user_name(u))}</b>\n"
-                f"ð ID: <code>{u.id}</code>\n"
-                f"ð Joined: {joined.astimezone(IST).strftime('%d/%m/%Y %H:%M:%S')}",
+                f"\U0001f464 Seller/Admin: <b>{esc(link['creator_name'])}</b>\n"
+                f"\U0001f4da Channel: <b>{esc(link['course_name'])}</b>\n"
+                f"\U0001f464 Member: <b>{esc(user_name(u))}</b>\n"
+                f"\U0001f194 ID: <code>{u.id}</code>\n"
+                f"\U0001f550 Joined: {joined.astimezone(IST).strftime('%d/%m/%Y %H:%M:%S')}",
                 parse_mode=ParseMode.HTML,
             )
         except Exception:
@@ -858,7 +858,7 @@ async def demo_job(context: ContextTypes.DEFAULT_TYPE):
 async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not owner(q.from_user.id):
-        await q.answer("â Owner only", show_alert=True)
+        await q.answer("\u274c Owner only", show_alert=True)
         return
 
     await q.answer()
@@ -870,25 +870,25 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ).fetchall()
 
     text = (
-        "ð <b>OWNER PANEL</b>\n\n"
-        f"ð¥ Admins: <b>{len(admins)}</b>\n"
-        f"ð¡ Detected Channels: <b>{len(channels)}</b>\n"
-        f"â± Demo Time: <b>{demo_minutes()} minutes</b>\n\n"
-        "ð¡ Bot à¤à¥ à¤à¤¿à¤¸à¥ channel à¤®à¥à¤ Administrator à¤¬à¤¨à¤¾à¤ â "
-        "à¤µà¤¹ channel automatically detect à¤¹à¥à¤à¤° Home à¤ªà¤° à¤¦à¤¿à¤à¤¾à¤ à¤¦à¥à¤à¤¾."
+        "\U0001f451 <b>OWNER PANEL</b>\n\n"
+        f"\U0001f465 Admins: <b>{len(admins)}</b>\n"
+        f"\U0001f4e1 Detected Channels: <b>{len(channels)}</b>\n"
+        f"\u23f1 Demo Time: <b>{demo_minutes()} minutes</b>\n\n"
+        "\U0001f4e1 Bot \u0915\u094b \u0915\u093f\u0938\u0940 channel \u092e\u0947\u0902 Administrator \u092c\u0928\u093e\u0913 \u2192 "
+        "\u0935\u0939 channel automatically detect \u0939\u094b\u0915\u0930 Home \u092a\u0930 \u0926\u093f\u0916\u093e\u0908 \u0926\u0947\u0917\u093e."
     )
 
     kb = [
         [
-            InlineKeyboardButton("ð¥ Admins", callback_data="admins"),
-            InlineKeyboardButton("â± Demo Time", callback_data="showtime"),
+            InlineKeyboardButton("\U0001f465 Admins", callback_data="admins"),
+            InlineKeyboardButton("\u23f1 Demo Time", callback_data="showtime"),
         ],
         [
-            InlineKeyboardButton("ð Daily Report", callback_data="report"),
-            InlineKeyboardButton("ð¡ Channels", callback_data="channels"),
+            InlineKeyboardButton("\U0001f4ca Daily Report", callback_data="report"),
+            InlineKeyboardButton("\U0001f4e1 Channels", callback_data="channels"),
         ],
         [
-            InlineKeyboardButton("â¬ï¸ Home", callback_data="home")
+            InlineKeyboardButton("\u2b05\ufe0f Home", callback_data="home")
         ],
     ]
 
@@ -898,7 +898,7 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def channels_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not owner(q.from_user.id):
-        await q.answer("â Owner only", show_alert=True)
+        await q.answer("\u274c Owner only", show_alert=True)
         return
 
     await q.answer()
@@ -910,34 +910,34 @@ async def channels_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not rows:
         text = (
-            "ð¡ <b>DETECTED CHANNELS</b>\n\n"
-            "à¤à¤­à¥ à¤à¥à¤ channel detect à¤¨à¤¹à¥à¤ à¤¹à¥à¤.\n\n"
-            "Bot à¤à¥ channel à¤®à¥à¤ Administrator à¤¬à¤¨à¤¾à¤.\n"
-            "Telegram à¤à¤¾ my_chat_member update à¤à¤¤à¥ à¤¹à¥ channel à¤à¤ªà¤¨à¥ à¤à¤ª save à¤¹à¥à¤à¤¾."
+            "\U0001f4e1 <b>DETECTED CHANNELS</b>\n\n"
+            "\u0905\u092d\u0940 \u0915\u094b\u0908 channel detect \u0928\u0939\u0940\u0902 \u0939\u0941\u0906.\n\n"
+            "Bot \u0915\u094b channel \u092e\u0947\u0902 Administrator \u092c\u0928\u093e\u0913.\n"
+            "Telegram \u0915\u093e my_chat_member update \u0906\u0924\u0947 \u0939\u0940 channel \u0905\u092a\u0928\u0947 \u0906\u092a save \u0939\u094b\u0917\u093e."
         )
-        kb = [[InlineKeyboardButton("â¬ï¸ Owner Panel", callback_data="owner")]]
+        kb = [[InlineKeyboardButton("\u2b05\ufe0f Owner Panel", callback_data="owner")]]
         await edit(q, text, InlineKeyboardMarkup(kb))
         return
 
-    text = "ð¡ <b>DETECTED CHANNELS</b>\n\n"
+    text = "\U0001f4e1 <b>DETECTED CHANNELS</b>\n\n"
     kb = []
 
     for r in rows:
         text += (
-            f"ð <b>{esc(r['title'])}</b>\n"
-            f"ð <code>{esc(r['chat_id'])}</code>\n"
-            f"ð Invite: {'ON' if r['can_invite'] else 'OFF'} | "
-            f"ð« Ban: {'ON' if r['can_ban'] else 'OFF'}\n\n"
+            f"\U0001f4da <b>{esc(r['title'])}</b>\n"
+            f"\U0001f194 <code>{esc(r['chat_id'])}</code>\n"
+            f"\U0001f517 Invite: {'ON' if r['can_invite'] else 'OFF'} | "
+            f"\U0001f6ab Ban: {'ON' if r['can_ban'] else 'OFF'}\n\n"
         )
         kb.append([
             InlineKeyboardButton(
-                f"ð {r['title']}",
+                f"\U0001f4da {r['title']}",
                 callback_data=f"channel:{r['chat_id']}",
             )
         ])
 
     kb.append([
-        InlineKeyboardButton("â¬ï¸ Owner Panel", callback_data="owner")
+        InlineKeyboardButton("\u2b05\ufe0f Owner Panel", callback_data="owner")
     ])
     await edit(q, text, InlineKeyboardMarkup(kb))
 
@@ -948,7 +948,7 @@ async def channels_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admins_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not owner(q.from_user.id):
-        await q.answer("â Owner only", show_alert=True)
+        await q.answer("\u274c Owner only", show_alert=True)
         return
     await q.answer()
 
@@ -957,22 +957,22 @@ async def admins_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "SELECT * FROM admins ORDER BY uid"
         ).fetchall()
 
-    text = "ð¥ <b>ADMINS</b>\n\n"
+    text = "\U0001f465 <b>ADMINS</b>\n\n"
     kb = []
 
     for r in rows:
         text += (
-            f"ð¤ <b>{esc(r['name'])}</b>\n"
-            f"ð <code>{r['uid']}</code>\n"
-            f"ð {esc(r['permissions'])}\n\n"
+            f"\U0001f464 <b>{esc(r['name'])}</b>\n"
+            f"\U0001f194 <code>{r['uid']}</code>\n"
+            f"\U0001f510 {esc(r['permissions'])}\n\n"
         )
 
     # No Add Course here.
     kb.append([
-        InlineKeyboardButton("â Add Admin", callback_data="addadmin")
+        InlineKeyboardButton("\u2795 Add Admin", callback_data="addadmin")
     ])
     kb.append([
-        InlineKeyboardButton("â¬ï¸ Owner Panel", callback_data="owner")
+        InlineKeyboardButton("\u2b05\ufe0f Owner Panel", callback_data="owner")
     ])
 
     await edit(q, text, InlineKeyboardMarkup(kb))
@@ -981,7 +981,7 @@ async def admins_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not owner(q.from_user.id):
-        await q.answer("â Owner only", show_alert=True)
+        await q.answer("\u274c Owner only", show_alert=True)
         return
 
     await q.answer()
@@ -989,11 +989,11 @@ async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await edit(
         q,
-        "â <b>ADD ADMIN</b>\n\n"
-        "Owner chat à¤®à¥à¤ numeric Telegram User ID à¤­à¥à¤à¥.\n\n"
+        "\u2795 <b>ADD ADMIN</b>\n\n"
+        "Owner chat \u092e\u0947\u0902 numeric Telegram User ID \u092d\u0947\u091c\u094b.\n\n"
         "Example:\n<code>123456789</code>",
         InlineKeyboardMarkup([
-            [InlineKeyboardButton("â Cancel", callback_data="owner")]
+            [InlineKeyboardButton("\u274c Cancel", callback_data="owner")]
         ]),
     )
 
@@ -1007,7 +1007,7 @@ async def add_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         uid = int(update.message.text.strip())
     except Exception:
-        await update.message.reply_text("â Numeric Telegram User ID à¤­à¥à¤à¥.")
+        await update.message.reply_text("\u274c Numeric Telegram User ID \u092d\u0947\u091c\u094b.")
         return
 
     context.user_data.pop("waiting_admin", None)
@@ -1022,19 +1022,19 @@ async def add_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     await update.message.reply_text(
-        f"â Admin added: <code>{uid}</code>\n"
+        f"\u2705 Admin added: <code>{uid}</code>\n"
         "Default access: Demo",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
-                    "ð Demo + Permanent",
+                    "\U0001f517 Demo + Permanent",
                     callback_data=f"access:both:{uid}"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "ð Demo Only",
+                    "\U0001f517 Demo Only",
                     callback_data=f"access:demo:{uid}"
                 )
             ],
@@ -1045,7 +1045,7 @@ async def add_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not owner(q.from_user.id):
-        await q.answer("â Owner only", show_alert=True)
+        await q.answer("\u274c Owner only", show_alert=True)
         return
 
     await q.answer()
@@ -1062,11 +1062,11 @@ async def set_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await edit(
         q,
-        "â <b>ACCESS UPDATED</b>\n\n"
-        f"ð <code>{uid}</code>\n"
-        f"ð {esc(permissions)}",
+        "\u2705 <b>ACCESS UPDATED</b>\n\n"
+        f"\U0001f194 <code>{uid}</code>\n"
+        f"\U0001f510 {esc(permissions)}",
         InlineKeyboardMarkup([
-            [InlineKeyboardButton("â¬ï¸ Admins", callback_data="admins")]
+            [InlineKeyboardButton("\u2b05\ufe0f Admins", callback_data="admins")]
         ]),
     )
 
@@ -1077,17 +1077,17 @@ async def set_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not owner(q.from_user.id):
-        await q.answer("â Owner only", show_alert=True)
+        await q.answer("\u274c Owner only", show_alert=True)
         return
 
     await q.answer()
     await edit(
         q,
-        f"â± <b>Current Demo Time: {demo_minutes()} minutes</b>\n\n"
-        "Owner chat à¤®à¥à¤ command à¤­à¥à¤à¥:\n"
+        f"\u23f1 <b>Current Demo Time: {demo_minutes()} minutes</b>\n\n"
+        "Owner chat \u092e\u0947\u0902 command \u092d\u0947\u091c\u094b:\n"
         "<code>/demotime 10</code>",
         InlineKeyboardMarkup([
-            [InlineKeyboardButton("â¬ï¸ Owner Panel", callback_data="owner")]
+            [InlineKeyboardButton("\u2b05\ufe0f Owner Panel", callback_data="owner")]
         ]),
     )
 
@@ -1118,12 +1118,12 @@ async def demotime(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         await update.message.reply_text(
-            f"â Demo time à¤à¤¬ <b>{n} minutes</b> à¤¹à¥.",
+            f"\u2705 Demo time \u0905\u092c <b>{n} minutes</b> \u0939\u0948.",
             parse_mode=ParseMode.HTML,
         )
     except ValueError:
         await update.message.reply_text(
-            "â Demo time 1 à¤¸à¥ 1440 minutes à¤à¥ à¤¬à¥à¤ à¤¹à¥à¤¨à¤¾ à¤à¤¾à¤¹à¤¿à¤."
+            "\u274c Demo time 1 \u0938\u0947 1440 minutes \u0915\u0947 \u092c\u0940\u091a \u0939\u094b\u0928\u093e \u091a\u093e\u0939\u093f\u090f."
         )
 
 
@@ -1154,63 +1154,63 @@ def make_report(date_string=None):
     perm_members = [r for r in day_members if r["link_type"] == "perm"]
 
     text = (
-        "ð <b>AUTOMATIC DAILY REPORT</b> ð\n"
-        f"ð Date: <b>{date_string}</b> (IST)\n"
-        "ââââââââââââââââââ\n\n"
-        f"ð <b>LINKS CREATED</b>\n"
-        f"ð Demo links: <b>{len(demo_links)}</b>\n"
-        f"ð Permanent links: <b>{len(perm_links)}</b>\n\n"
+        "\U0001f4ca <b>AUTOMATIC DAILY REPORT</b> \U0001f4ca\n"
+        f"\U0001f4c5 Date: <b>{date_string}</b> (IST)\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        f"\U0001f517 <b>LINKS CREATED</b>\n"
+        f"\U0001f393 Demo links: <b>{len(demo_links)}</b>\n"
+        f"\U0001f48e Permanent links: <b>{len(perm_links)}</b>\n\n"
     )
 
     if day_links:
         for r in day_links:
-            kind = "ð DEMO" if r["link_type"] == "demo" else "ð PERMANENT"
+            kind = "\U0001f393 DEMO" if r["link_type"] == "demo" else "\U0001f48e PERMANENT"
             text += (
                 f"{kind}\n"
-                f"ð Channel: <b>{esc(r['course_name'])}</b>\n"
-                f"ð¤ Seller/Admin: <b>{esc(r['creator_name'])}</b>\n"
-                f"ð Created: {local_time(r['created_at'])}\n"
-                f"ð {'USED' if r['used'] else 'UNUSED'}\n\n"
+                f"\U0001f4da Channel: <b>{esc(r['course_name'])}</b>\n"
+                f"\U0001f464 Seller/Admin: <b>{esc(r['creator_name'])}</b>\n"
+                f"\U0001f550 Created: {local_time(r['created_at'])}\n"
+                f"\U0001f4cc {'USED' if r['used'] else 'UNUSED'}\n\n"
             )
     else:
-        text += "â Aaj koi link create nahi hui.\n\n"
+        text += "\u274c Aaj koi link create nahi hui.\n\n"
 
-    text += "ââââââââââââââââââ\n\n"
-    text += f"ð <b>DEMO MEMBERS â {len(demo_members)}</b>\n\n"
+    text += "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+    text += f"\U0001f393 <b>DEMO MEMBERS \u2014 {len(demo_members)}</b>\n\n"
 
     if demo_members:
         for r in demo_members:
-            status = "ð« Auto Removed" if r["status"] == "removed" else "ð¢ Active"
+            status = "\U0001f6ab Auto Removed" if r["status"] == "removed" else "\U0001f7e2 Active"
             text += (
-                f"ð¤ Seller/Admin: <b>{esc(r['creator_name'])}</b>\n"
-                f"ð Channel: <b>{esc(r['course_name'])}</b>\n"
-                f"ð¤ Member: <b>{esc(r['full_name'])}</b>\n"
-                f"ð ID: <code>{r['user_id']}</code>\n"
-                f"ð Joined: {local_time(r['joined_at'])}\n"
+                f"\U0001f464 Seller/Admin: <b>{esc(r['creator_name'])}</b>\n"
+                f"\U0001f4da Channel: <b>{esc(r['course_name'])}</b>\n"
+                f"\U0001f464 Member: <b>{esc(r['full_name'])}</b>\n"
+                f"\U0001f194 ID: <code>{r['user_id']}</code>\n"
+                f"\U0001f550 Joined: {local_time(r['joined_at'])}\n"
                 f"{status}\n\n"
             )
     else:
-        text += "â No Demo member joined.\n\n"
+        text += "\u274c No Demo member joined.\n\n"
 
-    text += "ââââââââââââââââââ\n\n"
-    text += f"ð <b>PERMANENT MEMBERS â {len(perm_members)}</b>\n\n"
+    text += "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+    text += f"\U0001f48e <b>PERMANENT MEMBERS \u2014 {len(perm_members)}</b>\n\n"
 
     if perm_members:
         for r in perm_members:
             text += (
-                f"ð¤ Seller/Admin: <b>{esc(r['creator_name'])}</b>\n"
-                f"ð Channel: <b>{esc(r['course_name'])}</b>\n"
-                f"ð¤ Member: <b>{esc(r['full_name'])}</b>\n"
-                f"ð ID: <code>{r['user_id']}</code>\n"
-                f"ð Joined: {local_time(r['joined_at'])}\n"
-                "ð Permanent\n\n"
+                f"\U0001f464 Seller/Admin: <b>{esc(r['creator_name'])}</b>\n"
+                f"\U0001f4da Channel: <b>{esc(r['course_name'])}</b>\n"
+                f"\U0001f464 Member: <b>{esc(r['full_name'])}</b>\n"
+                f"\U0001f194 ID: <code>{r['user_id']}</code>\n"
+                f"\U0001f550 Joined: {local_time(r['joined_at'])}\n"
+                "\U0001f48e Permanent\n\n"
             )
     else:
-        text += "â No Permanent member joined.\n\n"
+        text += "\u274c No Permanent member joined.\n\n"
 
     text += (
-        "ââââââââââââââââââ\n"
-        f"ð Links: <b>{len(day_links)}</b> | "
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        f"\U0001f4cc Links: <b>{len(day_links)}</b> | "
         f"Demo Members: <b>{len(demo_members)}</b> | "
         f"Permanent Members: <b>{len(perm_members)}</b>"
     )
@@ -1253,7 +1253,7 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not owner(q.from_user.id):
-        await q.answer("â Owner only", show_alert=True)
+        await q.answer("\u274c Owner only", show_alert=True)
         return
 
     await q.answer()
@@ -1264,7 +1264,7 @@ async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         q,
         chunks[0],
         InlineKeyboardMarkup([
-            [InlineKeyboardButton("â¬ï¸ Owner Panel", callback_data="owner")]
+            [InlineKeyboardButton("\u2b05\ufe0f Owner Panel", callback_data="owner")]
         ]),
     )
 
@@ -1340,14 +1340,14 @@ async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for r in rows:
         message = (
-            f"ð <b>{esc(r['title'])}</b>\n\n"
+            f"\U0001f4da <b>{esc(r['title'])}</b>\n\n"
             "Tap to open access control."
         )
 
         results.append(
             InlineQueryResultArticle(
                 id=f"channel_{r['chat_id']}",
-                title=f"ð {r['title']}",
+                title=f"\U0001f4da {r['title']}",
                 description="Auto-detected channel",
                 input_message_content=InputTextMessageContent(
                     message,
@@ -1355,7 +1355,7 @@ async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ),
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton(
-                        "ð Open Control Panel",
+                        "\U0001f4da Open Control Panel",
                         callback_data=f"channel:{r['chat_id']}",
                     )]
                 ]),

@@ -1,6 +1,7 @@
 import os
 import html
 import logging
+from asyncio import Lock
 import re
 import sqlite3
 from collections import defaultdict
@@ -47,6 +48,9 @@ try:
     IST = ZoneInfo("Asia/Kolkata") if ZoneInfo else timezone(timedelta(hours=5, minutes=30))
 except Exception:
     IST = timezone(timedelta(hours=5, minutes=30))
+
+# Prevent duplicate manual report sends from double taps.
+REPORT_SEND_LOCK = Lock()
 
 
 # ============================================================
@@ -1427,117 +1431,135 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Manual Daily Report button.
-
-    Sends yesterday's completed IST report directly to the Owner.
-    It does NOT depend on editing a potentially very large HTML message,
-    so the button keeps working even when the report is split into many
-    Telegram messages.
-    """
+    """Manual previous-day report. Double taps are safely ignored."""
     q = update.callback_query
 
     if not owner(q.from_user.id):
         await q.answer("\u274c Owner only", show_alert=True)
         return
 
+    if REPORT_SEND_LOCK.locked():
+        await q.answer(
+            "\u23f3 Report already being generated...",
+            show_alert=True
+        )
+        return
+
     await q.answer("\U0001f4ca Report generating...")
 
-    try:
-        d = (ist_now().date() - timedelta(days=1)).isoformat()
-        chunks = split_report_text(make_report(d))
-
-        sent = 0
-        for chunk in chunks:
-            try:
-                await context.bot.send_message(
-                    chat_id=OWNER_ID,
-                    text=chunk,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
-            except Exception as html_error:
-                # If any generated text contains an HTML edge case,
-                # send that same report chunk as plain text instead of
-                # making the button appear broken.
-                log.warning(
-                    "HTML report send failed; sending plain text: %s",
-                    html_error,
-                )
-                await context.bot.send_message(
-                    chat_id=OWNER_ID,
-                    text=re.sub(r"<[^>]+>", "", chunk),
-                    disable_web_page_preview=True,
-                )
-            sent += 1
-
-        await edit(
-            q,
-            "\u2705 <b>Daily Report Sent</b>\n\n"
-            f"\U0001f4c5 Report date: <b>{esc(d)}</b> (IST)\n"
-            f"\U0001f4e8 Messages sent: <b>{sent}</b>\n\n"
-            "The complete member list is in the messages above.",
-            InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "\u2b05\ufe0f Owner Panel",
-                        callback_data="owner"
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "\U0001f4ca Send Again",
-                        callback_data="report"
-                    )
-                ],
-            ]),
-        )
-
-    except Exception as e:
-        log.exception("Manual daily report failed")
-
+    async with REPORT_SEND_LOCK:
         try:
-            await q.edit_message_text(
-                "\u274c <b>Daily Report Error</b>\n\n"
-                f"<code>{esc(str(e))}</code>\n\n"
-                "Bot logs me exact error check karo.",
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([
+            report_date = (
+                ist_now().date() - timedelta(days=1)
+            ).isoformat()
+
+            chunks = split_report_text(make_report(report_date))
+
+            for chunk in chunks:
+                try:
+                    await context.bot.send_message(
+                        chat_id=OWNER_ID,
+                        text=chunk,
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
+                except Exception as html_error:
+                    log.warning(
+                        "Manual HTML report send failed; "
+                        "sending plain text: %s",
+                        html_error,
+                    )
+                    await context.bot.send_message(
+                        chat_id=OWNER_ID,
+                        text=re.sub(r"<[^>]+>", "", chunk),
+                        disable_web_page_preview=True,
+                    )
+
+            await edit(
+                q,
+                "\u2705 <b>Daily Report Sent</b>\n\n"
+                f"\U0001f4c5 Date: <b>{esc(report_date)}</b> (IST)\n"
+                f"\U0001f4e8 Messages: <b>{len(chunks)}</b>\n\n"
+                "\u2705 Complete report sent above.",
+                InlineKeyboardMarkup([
                     [
                         InlineKeyboardButton(
                             "\u2b05\ufe0f Owner Panel",
                             callback_data="owner"
                         )
-                    ]
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "\U0001f4ca Send Again",
+                            callback_data="report"
+                        )
+                    ],
                 ]),
             )
-        except Exception:
-            pass
+
+        except Exception as e:
+            log.exception("Manual daily report failed")
+
+            try:
+                await q.edit_message_text(
+                    "\u274c <b>Daily Report Error</b>\n\n"
+                    f"<code>{esc(str(e))}</code>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton(
+                                "\u2b05\ufe0f Owner Panel",
+                                callback_data="owner"
+                            )
+                        ]
+                    ]),
+                )
+            except Exception:
+                pass
 
 
 async def daily_job(context: ContextTypes.DEFAULT_TYPE):
-    """Automatically send the previous completed IST calendar day once."""
+    """
+    Send the previous completed IST day exactly once.
+
+    The report date is claimed in SQLite BEFORE messages are sent.
+    This is important because long reports can take longer than the
+    one-minute scheduler interval, and multiple bot instances can also
+    run at the same time.
+
+    If sending fails, the claim is removed so the next scheduler run
+    can retry.
+    """
     local = ist_now()
 
-    # Wait until 00:05 IST so the previous day is fully complete.
+    # Previous day becomes eligible after 00:05 IST.
     if local.hour == 0 and local.minute < 5:
         return
 
-    d = (local.date() - timedelta(days=1)).isoformat()
+    report_date = (local.date() - timedelta(days=1)).isoformat()
 
-    with db() as c:
-        already = c.execute(
-            "SELECT 1 FROM reports WHERE report_date=?",
-            (d,),
-        ).fetchone()
-
-    if already or not OWNER_ID:
+    if not OWNER_ID:
+        log.error("OWNER_ID missing; daily report skipped")
         return
 
-    text = make_report(d)
+    # Atomic claim. SQLite UNIQUE PRIMARY KEY ensures only one runner
+    # can claim this report date.
+    with db() as c:
+        try:
+            c.execute(
+                "INSERT INTO reports(report_date,sent_at) VALUES(?,?)",
+                (report_date, iso(now())),
+            )
+            c.commit()
+        except sqlite3.IntegrityError:
+            # Already sent/claimed by another run or another bot process.
+            return
 
     try:
-        for chunk in split_report_text(text):
+        report_text = make_report(report_date)
+        chunks = split_report_text(report_text)
+
+        for chunk in chunks:
             try:
                 await context.bot.send_message(
                     chat_id=OWNER_ID,
@@ -1558,15 +1580,19 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
                 )
 
     except Exception:
-        log.exception("daily report send failed")
-        return
-
-    with db() as c:
-        c.execute(
-            "INSERT OR IGNORE INTO reports(report_date,sent_at) VALUES(?,?)",
-            (d, iso(now())),
+        log.exception(
+            "Automatic daily report failed for %s; releasing claim",
+            report_date,
         )
-        c.commit()
+
+        # Allow a future scheduler run to retry.
+        with db() as c:
+            c.execute(
+                "DELETE FROM reports WHERE report_date=?",
+                (report_date,),
+            )
+            c.commit()
+        return
 
 
 # ============================================================

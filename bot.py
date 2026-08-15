@@ -127,6 +127,18 @@ def init_db():
             report_date TEXT PRIMARY KEY,
             sent_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS report_messages(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id INTEGER NOT NULL,
+            report_type TEXT NOT NULL,
+            window_key TEXT NOT NULL,
+            message_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_report_once
+        ON report_messages(owner_id, report_type, window_key, message_id);
         """)
 
         c.execute(
@@ -1131,6 +1143,138 @@ async def demotime(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # DAILY REPORT
 # ============================================================
+async def delete_tracked_report_messages(bot, owner_id, report_type=None):
+    """Delete report messages previously sent by this bot for this owner."""
+    with db() as c:
+        if report_type:
+            rows = c.execute(
+                """
+                SELECT id, message_id FROM report_messages
+                WHERE owner_id=? AND report_type=?
+                ORDER BY id
+                """,
+                (owner_id, report_type),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                """
+                SELECT id, message_id FROM report_messages
+                WHERE owner_id=?
+                ORDER BY id
+                """,
+                (owner_id,),
+            ).fetchall()
+
+    deleted_ids = []
+    for r in rows:
+        try:
+            await bot.delete_message(
+                chat_id=owner_id,
+                message_id=int(r["message_id"]),
+            )
+            deleted_ids.append(int(r["id"]))
+        except Exception:
+            # Message may already be deleted. Remove its DB record anyway.
+            deleted_ids.append(int(r["id"]))
+
+    if deleted_ids:
+        with db() as c:
+            c.executemany(
+                "DELETE FROM report_messages WHERE id=?",
+                [(x,) for x in deleted_ids],
+            )
+            c.commit()
+
+
+def report_window_key(report_type):
+    """Stable key for the current report window."""
+    end = now().replace(second=0, microsecond=0)
+
+    if report_type == "1h":
+        # One fixed minute-aligned window. Repeated button taps in the
+        # same minute are the same report request.
+        start = end - timedelta(hours=1)
+        return f"{start.isoformat()}|{end.isoformat()}"
+
+    local_today = ist_now().date()
+    day = local_today - timedelta(days=1)
+    start_local = datetime(
+        day.year, day.month, day.day, 0, 0, 0, tzinfo=IST
+    )
+    end_local = start_local + timedelta(days=1)
+    return f"{start_local.isoformat()}|{end_local.isoformat()}"
+
+
+def claim_manual_report(owner_id, report_type, window_key):
+    """
+    Persistent idempotency guard.
+
+    Only one request for the exact same owner/type/window may send.
+    A later request for a new minute/day gets a new key.
+    """
+    with db() as c:
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute(
+                """
+                SELECT 1 FROM report_messages
+                WHERE owner_id=? AND report_type=? AND window_key=?
+                LIMIT 1
+                """,
+                (owner_id, report_type, window_key),
+            ).fetchone()
+
+            if row:
+                c.rollback()
+                return False
+
+            # Reserve the window before Telegram sending.
+            c.execute(
+                """
+                INSERT INTO report_messages
+                (owner_id, report_type, window_key, message_id, created_at)
+                VALUES(?,?,?,?,?)
+                """,
+                (owner_id, report_type, window_key, -1, iso(now())),
+            )
+            c.commit()
+            return True
+        except sqlite3.IntegrityError:
+            c.rollback()
+            return False
+        except Exception:
+            c.rollback()
+            raise
+
+
+def release_manual_report_claim(owner_id, report_type, window_key):
+    with db() as c:
+        c.execute(
+            """
+            DELETE FROM report_messages
+            WHERE owner_id=? AND report_type=? AND window_key=?
+              AND message_id=-1
+            """,
+            (owner_id, report_type, window_key),
+        )
+        c.commit()
+
+
+def save_report_message(owner_id, report_type, window_key, message_id):
+    with db() as c:
+        c.execute(
+            """
+            UPDATE report_messages
+            SET message_id=?
+            WHERE owner_id=? AND report_type=? AND window_key=?
+              AND message_id=-1
+            """,
+            (message_id, owner_id, report_type, window_key),
+        )
+        c.commit()
+
+
+
 def make_window_report(start_utc, end_utc, title, subtitle):
     """
     Detailed report for an arbitrary UTC time window.
@@ -1604,25 +1748,31 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not owner(update.effective_user.id):
         return
 
-    if REPORT_SEND_LOCK.locked():
+    kind = "24h"
+    window_key = report_window_key(kind)
+
+    if not claim_manual_report(OWNER_ID, kind, window_key):
         await update.message.reply_text(
-            "\u23f3 Another report is already being generated."
+            "\u2705 Today's completed 24-hour report was already sent."
         )
         return
 
-    async with REPORT_SEND_LOCK:
-        try:
-            for chunk in split_report_text(make_previous_day_report()):
-                await update.message.reply_text(
-                    chunk,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
-        except Exception as e:
-            log.exception("Daily report command failed")
-            await update.message.reply_text(
-                "\u274c Daily report error:\n" + str(e)
+    try:
+        for chunk in split_report_text(make_previous_day_report()):
+            msg = await update.message.reply_text(
+                chunk,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
             )
+            save_report_message(
+                OWNER_ID,
+                kind,
+                window_key,
+                msg.message_id,
+            )
+    except Exception:
+        release_manual_report_claim(OWNER_ID, kind, window_key)
+        raise
 
 
 async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1664,54 +1814,120 @@ async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def report_window_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send the selected 1-hour or 24-hour report exactly once per click."""
+    """Generate one clean report for one click/window; never duplicate it."""
     q = update.callback_query
 
     if not owner(q.from_user.id):
         await q.answer("\u274c Owner only", show_alert=True)
         return
 
-    if REPORT_SEND_LOCK.locked():
+    kind = q.data.split(":")[-1]
+    window_key = report_window_key(kind)
+
+    # Persistent guard: multiple workers/processes cannot all send the same
+    # report window.
+    if not claim_manual_report(OWNER_ID, kind, window_key):
         await q.answer(
-            "\u23f3 Another report is already being generated...",
-            show_alert=True
+            "\u2705 This report has already been sent for this window.",
+            show_alert=True,
         )
         return
 
-    kind = q.data.split(":")[-1]
     await q.answer("\U0001f4ca Generating report...")
 
-    async with REPORT_SEND_LOCK:
-        try:
-            if kind == "1h":
-                report_text = make_last_hour_report()
-                back_data = "report"
-                title = "\U0001f553 Last 1 Hour Report"
-            else:
-                report_text = make_previous_day_report()
-                back_data = "report"
-                title = "\U0001f4c5 24 Hours / Daily Report"
+    try:
+        if kind == "1h":
+            report_text = make_last_hour_report()
+            title = "\U0001f553 Last 1 Hour Report"
+        else:
+            report_text = make_previous_day_report()
+            title = "\U0001f4c5 24 Hours / Daily Report"
 
-            chunks = split_report_text(report_text)
+        chunks = split_report_text(report_text)
 
-            # IMPORTANT: send each chunk exactly once.
-            for chunk in chunks:
-                await context.bot.send_message(
-                    chat_id=OWNER_ID,
-                    text=chunk,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
+        # Send each chunk exactly once. The claim above makes the entire
+        # operation idempotent across multiple workers.
+        sent_ids = []
+        for chunk in chunks:
+            msg = await context.bot.send_message(
+                chat_id=OWNER_ID,
+                text=chunk,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            sent_ids.append(msg.message_id)
+
+        # The first message gets the reserved claim; additional chunks get
+        # normal rows. This lets us clean up report messages later.
+        with db() as c:
+            c.execute(
+                """
+                UPDATE report_messages
+                SET message_id=?
+                WHERE owner_id=? AND report_type=? AND window_key=?
+                  AND message_id=-1
+                """,
+                (
+                    sent_ids[0],
+                    OWNER_ID,
+                    kind,
+                    window_key,
+                ),
+            )
+            for mid in sent_ids[1:]:
+                c.execute(
+                    """
+                    INSERT INTO report_messages
+                    (owner_id,report_type,window_key,message_id,created_at)
+                    VALUES(?,?,?,?,?)
+                    """,
+                    (
+                        OWNER_ID,
+                        kind,
+                        window_key,
+                        mid,
+                        iso(now()),
+                    ),
                 )
+            c.commit()
 
+        await edit(
+            q,
+            f"\u2705 <b>{title}</b>\n\n"
+            "Report ek hi baar send ki gayi hai.",
+            InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "\U0001f4ca Report Center",
+                        callback_data="report"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "\u2b05\ufe0f Owner Panel",
+                        callback_data="owner"
+                    )
+                ],
+            ]),
+        )
+
+    except Exception as e:
+        log.exception("Report window failed")
+
+        # If Telegram failed before the report was completely sent, release
+        # the claim so the owner can retry.
+        release_manual_report_claim(OWNER_ID, kind, window_key)
+
+        try:
             await edit(
                 q,
-                f"\u2705 <b>{title}</b> sent.\n\n"
-                f"\U0001f4e8 Messages: <b>{len(chunks)}</b>",
+                "\u274c <b>Report Error</b>\n\n"
+                f"<code>{esc(str(e))}</code>",
                 InlineKeyboardMarkup([
                     [
                         InlineKeyboardButton(
                             "\U0001f4ca Report Center",
-                            callback_data=back_data
+                            callback_data="report"
                         )
                     ],
                     [
@@ -1722,32 +1938,25 @@ async def report_window_button(update: Update, context: ContextTypes.DEFAULT_TYP
                     ],
                 ]),
             )
+        except Exception:
+            pass
 
-        except Exception as e:
-            log.exception("Report window failed")
 
-            try:
-                await edit(
-                    q,
-                    "\u274c <b>Report Error</b>\n\n"
-                    f"<code>{esc(str(e))}</code>",
-                    InlineKeyboardMarkup([
-                        [
-                            InlineKeyboardButton(
-                                "\U0001f4ca Report Center",
-                                callback_data="report"
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                "\u2b05\ufe0f Owner Panel",
-                                callback_data="owner"
-                            )
-                        ],
-                    ]),
-                )
-            except Exception:
-                pass
+async def clear_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner command: /clearreports deletes reports sent by this bot."""
+    if not owner(update.effective_user.id):
+        return
+
+    await delete_tracked_report_messages(
+        context.bot,
+        OWNER_ID,
+        None,
+    )
+
+    await update.message.reply_text(
+        "\u2705 Tracked report messages cleared.\n"
+        "Old messages sent by a previous bot process may not be tracked."
+    )
 
 
 async def daily_job(context: ContextTypes.DEFAULT_TYPE):
@@ -1988,6 +2197,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("demotime", demotime))
     app.add_handler(CommandHandler("dailyreport", report))
+    app.add_handler(CommandHandler("clearreports", clear_reports))
     app.add_handler(CommandHandler("checkchannel", checkchannel))
 
     # Owner admin input

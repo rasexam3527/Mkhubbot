@@ -1118,88 +1118,274 @@ async def demotime(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # DAILY REPORT
 # ============================================================
 def make_report(date_string=None):
-    date_string = date_string or (ist_now().date() - timedelta(days=1)).isoformat()
+    """
+    Complete owner daily report for one completed IST calendar day.
+
+    Every generated link and every actual member join is kept separately.
+    A demo member remains in the report after auto-removal; only the
+    member status changes from active -> removed.
+    """
+    date_string = date_string or (
+        ist_now().date() - timedelta(days=1)
+    ).isoformat()
 
     with db() as c:
         links = c.execute(
             "SELECT * FROM links ORDER BY created_at"
         ).fetchall()
+
         members = c.execute(
             "SELECT * FROM members ORDER BY joined_at"
         ).fetchall()
 
     day_links = [
-        r for r in links if local_date(r["created_at"]) == date_string
-    ]
-    day_members = [
-        r for r in members if local_date(r["joined_at"]) == date_string
+        r for r in links
+        if local_date(r["created_at"]) == date_string
     ]
 
-    demo_links = [r for r in day_links if r["link_type"] == "demo"]
-    perm_links = [r for r in day_links if r["link_type"] == "perm"]
-    demo_members = [r for r in day_members if r["link_type"] == "demo"]
-    perm_members = [r for r in day_members if r["link_type"] == "perm"]
+    day_members = [
+        r for r in members
+        if local_date(r["joined_at"]) == date_string
+    ]
+
+    demo_links = [
+        r for r in day_links if r["link_type"] == "demo"
+    ]
+    perm_links = [
+        r for r in day_links if r["link_type"] == "perm"
+    ]
+
+    demo_members = [
+        r for r in day_members if r["link_type"] == "demo"
+    ]
+    perm_members = [
+        r for r in day_members if r["link_type"] == "perm"
+    ]
+
+    # --------------------------------------------------------
+    # SELLER-WISE TOTALS
+    # --------------------------------------------------------
+    seller_stats = defaultdict(lambda: {
+        "demo_links": 0,
+        "perm_links": 0,
+        "demo_members": 0,
+        "perm_members": 0,
+    })
+
+    for r in day_links:
+        seller = r["creator_name"]
+        if r["link_type"] == "demo":
+            seller_stats[seller]["demo_links"] += 1
+        else:
+            seller_stats[seller]["perm_links"] += 1
+
+    for r in day_members:
+        seller = r["creator_name"]
+        if r["link_type"] == "demo":
+            seller_stats[seller]["demo_members"] += 1
+        else:
+            seller_stats[seller]["perm_members"] += 1
 
     text = (
         "\U0001f4ca <b>AUTOMATIC DAILY REPORT</b> \U0001f4ca\n"
         f"\U0001f4c5 Date: <b>{date_string}</b> (IST)\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-        f"\U0001f517 <b>LINKS CREATED</b>\n"
-        f"\U0001f393 Demo links: <b>{len(demo_links)}</b>\n"
-        f"\U0001f48e Permanent links: <b>{len(perm_links)}</b>\n\n"
+        "\U0001f4cc This report contains the complete activity of the "
+        "completed day.\n"
+        "\u2501" * 18 + "\n\n"
+    )
+
+    # --------------------------------------------------------
+    # SELLER SUMMARY
+    # --------------------------------------------------------
+    text += (
+        "\U0001f465 <b>SELLER-WISE SUMMARY</b>\n\n"
+    )
+
+    if seller_stats:
+        for seller, s in sorted(
+            seller_stats.items(),
+            key=lambda x: x[0].lower()
+        ):
+            total_members = (
+                s["demo_members"] + s["perm_members"]
+            )
+            total_links = (
+                s["demo_links"] + s["perm_links"]
+            )
+
+            text += (
+                f"\U0001f464 <b>{esc(seller)}</b>\n"
+                f"\U0001f393 Demo Links: <b>{s['demo_links']}</b> | "
+                f"Members Added: <b>{s['demo_members']}</b>\n"
+                f"\U0001f48e Permanent Links: <b>{s['perm_links']}</b> | "
+                f"Members Added: <b>{s['perm_members']}</b>\n"
+                f"\U0001f4ca Total Links: <b>{total_links}</b> | "
+                f"Total Members: <b>{total_members}</b>\n\n"
+            )
+    else:
+        text += "\u274c No seller activity recorded today.\n\n"
+
+    text += "\u2501" * 18 + "\n\n"
+
+    # --------------------------------------------------------
+    # GENERATED LINKS
+    # This tells owner who generated/sent the access link.
+    # --------------------------------------------------------
+    text += (
+        "\U0001f517 <b>LINKS GENERATED / SENT</b>\n"
+        f"\U0001f393 Demo Links: <b>{len(demo_links)}</b>\n"
+        f"\U0001f48e Permanent Links: <b>{len(perm_links)}</b>\n\n"
     )
 
     if day_links:
-        for r in day_links:
-            kind = "\U0001f393 DEMO" if r["link_type"] == "demo" else "\U0001f48e PERMANENT"
+        for i, r in enumerate(day_links, 1):
+            kind = (
+                "\U0001f393 DEMO LINK"
+                if r["link_type"] == "demo"
+                else "\U0001f48e PERMANENT LINK"
+            )
+            used = (
+                "\U0001f7e2 USED"
+                if r["used"]
+                else "\u26aa UNUSED"
+            )
+
             text += (
-                f"{kind}\n"
-                f"\U0001f4da Channel: <b>{esc(r['course_name'])}</b>\n"
-                f"\U0001f464 Seller/Admin: <b>{esc(r['creator_name'])}</b>\n"
-                f"\U0001f550 Created: {local_time(r['created_at'])}\n"
-                f"\U0001f4cc {'USED' if r['used'] else 'UNUSED'}\n\n"
+                f"<b>Link #{i}</b> \u2014 {kind}\n"
+                f"\U0001f4da Course/Channel: "
+                f"<b>{esc(r['course_name'])}</b>\n"
+                f"\U0001f464 Created By: "
+                f"<b>{esc(r['creator_name'])}</b>\n"
+                f"\U0001f194 Creator ID: "
+                f"<code>{r['creator_id']}</code>\n"
+                f"\U0001f550 Link Created: "
+                f"<b>{local_time(r['created_at'])}</b>\n"
+                f"\U0001f517 Link: "
+                f"<a href=\"{esc(r['invite_link'])}\">Open Link</a>\n"
+                f"\U0001f4cc Status: <b>{used}</b>\n\n"
             )
     else:
-        text += "\u274c Aaj koi link create nahi hui.\n\n"
+        text += "\u274c No access link was generated today.\n\n"
 
-    text += "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-    text += f"\U0001f393 <b>DEMO MEMBERS \u2014 {len(demo_members)}</b>\n\n"
+    text += "\u2501" * 18 + "\n\n"
+
+    # --------------------------------------------------------
+    # DEMO MEMBER DETAIL
+    # --------------------------------------------------------
+    text += (
+        f"\U0001f393 <b>DEMO MEMBERS \u2014 {len(demo_members)}</b>\n\n"
+    )
 
     if demo_members:
-        for r in demo_members:
-            status = "\U0001f6ab Auto Removed" if r["status"] == "removed" else "\U0001f7e2 Active"
+        for i, r in enumerate(demo_members, 1):
+            if r["status"] == "removed":
+                status = "\U0001f6ab Auto Removed"
+            elif r["status"] == "active":
+                status = "\U0001f7e2 Active"
+            else:
+                status = esc(r["status"])
+
+            username = (
+                f"@{esc(r['username'])}"
+                if r["username"]
+                else "No username"
+            )
+
             text += (
-                f"\U0001f464 Seller/Admin: <b>{esc(r['creator_name'])}</b>\n"
-                f"\U0001f4da Channel: <b>{esc(r['course_name'])}</b>\n"
-                f"\U0001f464 Member: <b>{esc(r['full_name'])}</b>\n"
-                f"\U0001f194 ID: <code>{r['user_id']}</code>\n"
-                f"\U0001f550 Joined: {local_time(r['joined_at'])}\n"
-                f"{status}\n\n"
+                f"<b>Demo #{i}</b>\n"
+                f"\U0001f464 <b>Member Name:</b> "
+                f"{esc(r['full_name'])}\n"
+                f"\U0001f517 <b>Username:</b> {username}\n"
+                f"\U0001f194 <b>Member ID:</b> "
+                f"<code>{r['user_id']}</code>\n"
+                f"\U0001f4da <b>Added In:</b> "
+                f"{esc(r['course_name'])}\n"
+                f"\U0001f393 <b>Access Type:</b> DEMO\n"
+                f"\U0001f464 <b>Added By:</b> "
+                f"{esc(r['creator_name'])}\n"
+                f"\U0001f194 <b>Seller ID:</b> "
+                f"<code>{r['creator_id']}</code>\n"
+                f"\U0001f550 <b>Joined Time:</b> "
+                f"{local_time(r['joined_at'])} IST\n"
+                f"\u23f3 <b>Demo Duration:</b> "
+                f"{demo_minutes()} minutes\n"
+                f"\U0001f6ab <b>Status:</b> {status}\n"
+            )
+
+            if r["removed_at"]:
+                text += (
+                    f"\U0001f552 <b>Removed Time:</b> "
+                    f"{local_time(r['removed_at'])} IST\n"
+                )
+
+            text += (
+                f"\U0001f517 <b>Joining Link:</b> "
+                f"<a href=\"{esc(r['invite_link'])}\">Open Link</a>\n\n"
             )
     else:
-        text += "\u274c No Demo member joined.\n\n"
+        text += "\u274c No Demo member joined today.\n\n"
 
-    text += "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-    text += f"\U0001f48e <b>PERMANENT MEMBERS \u2014 {len(perm_members)}</b>\n\n"
+    text += "\u2501" * 18 + "\n\n"
+
+    # --------------------------------------------------------
+    # PERMANENT MEMBER DETAIL
+    # --------------------------------------------------------
+    text += (
+        f"\U0001f48e <b>PERMANENT MEMBERS \u2014 "
+        f"{len(perm_members)}</b>\n\n"
+    )
 
     if perm_members:
-        for r in perm_members:
+        for i, r in enumerate(perm_members, 1):
+            username = (
+                f"@{esc(r['username'])}"
+                if r["username"]
+                else "No username"
+            )
+
             text += (
-                f"\U0001f464 Seller/Admin: <b>{esc(r['creator_name'])}</b>\n"
-                f"\U0001f4da Channel: <b>{esc(r['course_name'])}</b>\n"
-                f"\U0001f464 Member: <b>{esc(r['full_name'])}</b>\n"
-                f"\U0001f194 ID: <code>{r['user_id']}</code>\n"
-                f"\U0001f550 Joined: {local_time(r['joined_at'])}\n"
-                "\U0001f48e Permanent\n\n"
+                f"<b>Permanent #{i}</b>\n"
+                f"\U0001f464 <b>Member Name:</b> "
+                f"{esc(r['full_name'])}\n"
+                f"\U0001f517 <b>Username:</b> {username}\n"
+                f"\U0001f194 <b>Member ID:</b> "
+                f"<code>{r['user_id']}</code>\n"
+                f"\U0001f4da <b>Added In:</b> "
+                f"{esc(r['course_name'])}\n"
+                f"\U0001f48e <b>Access Type:</b> PERMANENT\n"
+                f"\U0001f464 <b>Added By:</b> "
+                f"{esc(r['creator_name'])}\n"
+                f"\U0001f194 <b>Seller ID:</b> "
+                f"<code>{r['creator_id']}</code>\n"
+                f"\U0001f550 <b>Joined Time:</b> "
+                f"{local_time(r['joined_at'])} IST\n"
+                f"\U0001f7e2 <b>Status:</b> Active/Permanent\n"
+                f"\U0001f517 <b>Joining Link:</b> "
+                f"<a href=\"{esc(r['invite_link'])}\">Open Link</a>\n\n"
             )
     else:
-        text += "\u274c No Permanent member joined.\n\n"
+        text += "\u274c No Permanent member joined today.\n\n"
 
+    text += "\u2501" * 18 + "\n\n"
+
+    # --------------------------------------------------------
+    # FINAL TOTALS
+    # --------------------------------------------------------
     text += (
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
-        f"\U0001f4cc Links: <b>{len(day_links)}</b> | "
-        f"Demo Members: <b>{len(demo_members)}</b> | "
-        f"Permanent Members: <b>{len(perm_members)}</b>"
+        "\U0001f4ca <b>FINAL TOTALS</b>\n"
+        f"\U0001f517 Total Links Generated: "
+        f"<b>{len(day_links)}</b>\n"
+        f"\U0001f393 Demo Links: <b>{len(demo_links)}</b>\n"
+        f"\U0001f48e Permanent Links: <b>{len(perm_links)}</b>\n"
+        f"\U0001f393 Demo Members Added: "
+        f"<b>{len(demo_members)}</b>\n"
+        f"\U0001f48e Permanent Members Added: "
+        f"<b>{len(perm_members)}</b>\n"
+        f"\U0001f465 Total Members Added: "
+        f"<b>{len(day_members)}</b>\n"
+        "\n"
+        "\u2705 Demo members are kept in the report even after "
+        "automatic removal."
     )
 
     return text

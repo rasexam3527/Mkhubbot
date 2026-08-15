@@ -377,19 +377,7 @@ def clean_ui_text(text):
     return str(text)
 
 
-
-# ---------- CALLBACK RESPONSIVENESS ----------
-
-async def _safe_callback_answer(query):
-    """Acknowledge Telegram callback buttons immediately so the UI never spins."""
-    try:
-        await query.answer()
-    except Exception:
-        pass
-
-
 async def safe_edit(query, text, keyboard=None):
-    await _safe_callback_answer(query)
     try:
         await query.edit_message_text(
             clean_ui_text(text),
@@ -601,7 +589,6 @@ async def bot_chat_member_update(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def channels_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_callback_answer(callback_query)
     q = update.callback_query
     if not admin(q.from_user.id):
         await q.answer("\u274c Access denied", show_alert=True)
@@ -632,7 +619,6 @@ async def channels_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def detected_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_callback_answer(callback_query)
     q = update.callback_query
     if not admin(q.from_user.id):
         await q.answer("\u274c Access denied", show_alert=True)
@@ -685,7 +671,6 @@ async def detected_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # CATEGORY / COURSE
 # ============================================================
 async def category(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_callback_answer(callback_query)
     q = update.callback_query
     await q.answer()
     cid = int(q.data.split(":")[1])
@@ -721,7 +706,6 @@ async def category(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def course(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_callback_answer(callback_query)
     q = update.callback_query
     await q.answer()
     course_id = int(q.data.split(":")[1])
@@ -811,7 +795,6 @@ async def permission_check(bot, chat_id, demo=False):
 
 
 async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_callback_answer(callback_query)
     q = update.callback_query
     await q.answer()
 
@@ -1288,7 +1271,6 @@ def yesterday_range():
 
 
 async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_callback_answer(callback_query)
     q = update.callback_query
 
     if not owner(q.from_user.id):
@@ -1543,7 +1525,6 @@ async def hourly_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # OWNER PANEL / ADMIN
 # ============================================================
 async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_callback_answer(callback_query)
     q = update.callback_query
 
     if not owner(q.from_user.id):
@@ -1586,7 +1567,6 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_callback_answer(callback_query)
     q = update.callback_query
     if not owner(q.from_user.id):
         await q.answer("\u274c Owner only", show_alert=True)
@@ -1642,7 +1622,6 @@ async def add_admin_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def set_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_callback_answer(callback_query)
     q = update.callback_query
     if not owner(q.from_user.id):
         await q.answer("\u274c Owner only", show_alert=True)
@@ -1671,7 +1650,6 @@ async def set_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def edit_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_callback_answer(callback_query)
     q = update.callback_query
     if not owner(q.from_user.id):
         await q.answer("\u274c Owner only", show_alert=True)
@@ -1698,7 +1676,6 @@ async def edit_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def choose_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_callback_answer(callback_query)
     q = update.callback_query
     if not owner(q.from_user.id):
         await q.answer("\u274c Owner only", show_alert=True)
@@ -1724,7 +1701,6 @@ async def choose_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_callback_answer(callback_query)
     q = update.callback_query
     if not owner(q.from_user.id):
         await q.answer("\u274c Owner only", show_alert=True)
@@ -1767,7 +1743,6 @@ async def demotime(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # CATEGORY / COURSE CREATION (OWNER)
 # ============================================================
 async def add_category_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_callback_answer(callback_query)
     q = update.callback_query
     if not owner(q.from_user.id):
         await q.answer("\u274c Owner only", show_alert=True)

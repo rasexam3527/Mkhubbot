@@ -868,10 +868,7 @@ async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             )
 
-        # Course material / view link.
-        # Public Telegram channels expose a stable URL via @username.
-        # Private channels do not have a generic public material URL, so
-        # the bot does not invent a fake link.
+        # ---------- ACCESS / COURSE MATERIAL MESSAGE ----------
         with db() as c:
             ch_row = c.execute(
                 "SELECT username FROM channels WHERE chat_id=?",
@@ -879,31 +876,27 @@ async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ).fetchone()
 
         channel_username = (ch_row["username"] or "").strip() if ch_row else ""
+
         if channel_username:
             channel_username = channel_username.lstrip("@")
             material_url = f"https://t.me/{channel_username}"
-            material_line = (
-                f"\U0001f5a5 <b>\u0915\u094b\u0930\u094d\u0938 \u092e\u091f\u0947\u0930\u093f\u092f\u0932 \u092f\u0939\u093e\u0901 \u0926\u0947\u0916\u0947\u0902 (View Link):</b> "
-                f'<a href="{esc(material_url)}">Open Course Material</a>'
-            )
         else:
-            material_line = (
-                "\U0001f5a5 <b>\u0915\u094b\u0930\u094d\u0938 \u092e\u091f\u0947\u0930\u093f\u092f\u0932 \u092f\u0939\u093e\u0901 \u0926\u0947\u0916\u0947\u0902 (View Link):</b> "
-                "Channel private \u0939\u0948 \u2014 public View Link available \u0928\u0939\u0940\u0902 \u0939\u0948\u0964"
-            )
+            raw_chat_id = str(chat_id)
+            internal_id = raw_chat_id[4:] if raw_chat_id.startswith("-100") else raw_chat_id
+            material_url = f"https://t.me/c/{internal_id}/1"
 
-        access_title = "Demo Pass" if link_type == "demo" else "Permanent Pass"
+        access_type = "Permanent" if link_type == "permanent" else "Demo"
+
         text = (
-            f"\U0001f393 <b>Access Granted: {access_title}</b>\n\n"
-            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-            f"\U0001f4da <b>Course:</b> {esc(course_row['name'])}\n\n"
-            "\U0001f4e5 <b>\u092f\u0939\u093e\u0901 \u0938\u0947 \u091c\u094d\u0935\u093e\u0907\u0928 \u0915\u0930\u0947\u0902 (Joining Link):</b>\n"
-            f'<a href="{esc(invite.invite_link)}">\U0001f517 Open Joining Link</a>\n\n'
-            f"{material_line}\n\n"
-            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-            "\U0001f4cc <b>\u092e\u0939\u0924\u094d\u0935\u092a\u0942\u0930\u094d\u0923 \u0928\u093f\u0930\u094d\u0926\u0947\u0936 (Important):</b>\n"
-            "\U0001f6ab \u092f\u0939 Joining Link \u0915\u0947\u0935\u0932 \u090f\u0915 \u092c\u093e\u0930 \u0915\u0947 \u0932\u093f\u090f \u0939\u0948\u0964 \u091c\u094d\u0935\u093e\u0907\u0928 \u0915\u0930\u0924\u0947 \u0939\u0940 \u092f\u0939 \u0924\u0941\u0930\u0902\u0924 Expire \u0939\u094b \u091c\u093e\u090f\u0917\u093e\u0964\n"
-            "\u2705 \u0915\u0943\u092a\u092f\u093e \u0906\u0917\u0947 \u0938\u0947 \u0915\u094d\u0932\u093e\u0938 \u0926\u0947\u0916\u0928\u0947 \u0915\u0947 \u0932\u093f\u090f \u0939\u092e\u0947\u0936\u093e \u090a\u092a\u0930 \u0926\u093f\u090f \u0917\u090f '\u0915\u094b\u0930\u094d\u0938 \u092e\u091f\u0947\u0930\u093f\u092f\u0932 \u0932\u093f\u0902\u0915' \u0915\u093e \u0939\u0940 \u0909\u092a\u092f\u094b\u0917 \u0915\u0930\u0947\u0902\u0964"
+            "ð¥ <b>à¤¯à¤¹à¤¾à¤ à¤¸à¥ à¤à¥à¤µà¤¾à¤à¤¨ à¤à¤°à¥à¤ (Joining Link):</b>\n"
+            f'ð <a href="{esc(invite.invite_link)}">{esc(invite.invite_link)}</a>\n\n'
+            "ð¥ <b>à¤à¥à¤°à¥à¤¸ à¤®à¤à¥à¤°à¤¿à¤¯à¤² à¤¯à¤¹à¤¾à¤ à¤¦à¥à¤à¥à¤ (View Link):</b>\n"
+            f'ð <a href="{esc(material_url)}">{esc(material_url)}</a>\n\n'
+            "ð <b>à¤®à¤¹à¤¤à¥à¤µà¤ªà¥à¤°à¥à¤£ à¤¨à¤¿à¤°à¥à¤¦à¥à¤¶ (Important):</b>\n"
+            f"ð« à¤¯à¤¹ {access_type} Joining Link à¤à¥à¤µà¤² à¤à¤ à¤¬à¤¾à¤° à¤à¥ à¤²à¤¿à¤ à¤¹à¥à¥¤ "
+            "à¤à¥à¤µà¤¾à¤à¤¨ à¤à¤°à¤¤à¥ à¤¹à¥ à¤¯à¤¹ à¤¤à¥à¤°à¤à¤¤ Expire à¤¹à¥ à¤à¤¾à¤à¤à¤¾à¥¤\n"
+            "â à¤à¥à¤ªà¤¯à¤¾ à¤à¤à¥ à¤¸à¥ à¤à¥à¤²à¤¾à¤¸ à¤¦à¥à¤à¤¨à¥ à¤à¥ à¤²à¤¿à¤ à¤¹à¤®à¥à¤¶à¤¾ à¤à¤ªà¤° à¤¦à¤¿à¤ à¤à¤ "
+            "'à¤à¥à¤°à¥à¤¸ à¤®à¤à¥à¤°à¤¿à¤¯à¤² à¤²à¤¿à¤à¤' à¤à¤¾ à¤¹à¥ à¤à¤ªà¤¯à¥à¤ à¤à¤°à¥à¤à¥¤"
         )
 
         await safe_edit(

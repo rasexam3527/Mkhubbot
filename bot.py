@@ -1,2013 +1,1362 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import os
-import html
-import logging
-import sqlite3
+
+"""
+COURSE BOT - Complete Telegram Bot
+----------------------------------
+Features:
+- Clean UTF-8 Hindi + English messages
+- Only OWNER PANEL + DAILY REPORT on seller home
+- Owner panel with working admin/report/channel controls
+- Automatic channel detection when bot becomes admin
+- Inline course search: @YourBotUsername course-name
+- Demo access: one-use invite link + 5-minute auto remove
+- Permanent access: invite link + course material/view link
+- Join activity logging: member, username, ID, admin, course, type, time
+- Daily reports: Last 1 Hour and Last 24 Hours
+- SQLite database (bot.db) auto-created
+- Duplicate-message protection
+- Duplicate report protection
+- No mojibake / broken emoji text
+
+Requirements:
+    pip install -U python-telegram-bot
+
+Environment:
+    BOT_TOKEN=123456:ABC...
+    OWNER_ID=123456789
+
+Optional:
+    TIMEZONE=Asia/Kolkata
+
+Run:
+    python bot.py
+"""
+
 import asyncio
-import socket
-import atexit
+import logging
+import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
+from html import escape
 from zoneinfo import ZoneInfo
 
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    InlineQueryResultArticle, InputTextMessageContent
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ChatMemberUpdated,
 )
-from telegram.constants import ParseMode
+from telegram.constants import ChatType, ParseMode
+from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    ConversationHandler, MessageHandler, ContextTypes,
-    InlineQueryHandler, ChatMemberHandler, filters
+    Application,
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    ChatMemberHandler,
+    CommandHandler,
+    ContextTypes,
+    InlineQueryHandler,
+    MessageHandler,
+    filters,
 )
 
-
-# ============================================================
-# SINGLE INSTANCE / DUPLICATE PROTECTION
-# ============================================================
-_INSTANCE_LOCK_HANDLE = None
-
-def acquire_single_instance_lock():
-    """
-    Allow only ONE copy of this bot on the same machine/container.
-
-    This prevents the exact symptom where one /start creates the same
-    screen many times or one report button opens REPORT CENTER repeatedly.
-    The lock is released automatically when the process exits.
-    """
-    global _INSTANCE_LOCK_HANDLE
-
-    lock_path = os.getenv(
-        "BOT_LOCK_PATH",
-        os.path.abspath("raj_course_bot.lock")
-    )
-
-    handle = open(lock_path, "a+", encoding="utf-8")
-
-    try:
-        if os.name == "nt":
-            import msvcrt
-            handle.seek(0)
-            try:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            except OSError:
-                handle.close()
-                raise RuntimeError(
-                    "Another RAJ COURSE BOT process is already running. "
-                    "Stop the old bot process/workflow first."
-                )
-        else:
-            import fcntl
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                handle.close()
-                raise RuntimeError(
-                    "Another RAJ COURSE BOT process is already running. "
-                    "Stop the old bot process/workflow first."
-                )
-
-        handle.seek(0)
-        handle.truncate()
-        handle.write(
-            f"pid={os.getpid()} host={socket.gethostname()}\n"
-        )
-        handle.flush()
-
-        _INSTANCE_LOCK_HANDLE = handle
-        atexit.register(release_single_instance_lock)
-
-    except Exception:
-        try:
-            handle.close()
-        except Exception:
-            pass
-        raise
-
-
-def release_single_instance_lock():
-    global _INSTANCE_LOCK_HANDLE
-    if _INSTANCE_LOCK_HANDLE is None:
-        return
-
-    try:
-        if os.name != "nt":
-            import fcntl
-            fcntl.flock(
-                _INSTANCE_LOCK_HANDLE.fileno(),
-                fcntl.LOCK_UN
-            )
-        else:
-            import msvcrt
-            _INSTANCE_LOCK_HANDLE.seek(0)
-            msvcrt.locking(
-                _INSTANCE_LOCK_HANDLE.fileno(),
-                msvcrt.LK_UNLCK,
-                1
-            )
-    except Exception:
-        pass
-
-    try:
-        _INSTANCE_LOCK_HANDLE.close()
-    except Exception:
-        pass
-
-    _INSTANCE_LOCK_HANDLE = None
-
-
-# In-process update/callback de-duplication.
-# Telegram normally delivers each update once, but this protects against
-# accidental repeated delivery while the process is alive.
-_SEEN_EVENTS = {}
-_SEEN_EVENT_LIMIT = 2000
-
-
-def claim_event(key, ttl=300):
-    current = asyncio.get_event_loop().time()
-
-    old_keys = [
-        k for k, timestamp in _SEEN_EVENTS.items()
-        if current - timestamp > ttl
-    ]
-    for k in old_keys:
-        _SEEN_EVENTS.pop(k, None)
-
-    if key in _SEEN_EVENTS:
-        return False
-
-    _SEEN_EVENTS[key] = current
-
-    if len(_SEEN_EVENTS) > _SEEN_EVENT_LIMIT:
-        oldest = sorted(
-            _SEEN_EVENTS.items(),
-            key=lambda item: item[1]
-        )[:200]
-        for k, _ in oldest:
-            _SEEN_EVENTS.pop(k, None)
-
-    return True
-
-# ============================================================
+# =========================
 # CONFIG
-# ============================================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-OWNER_ID = int(os.getenv("OWNER_ID", "0") or 0)
-DB_PATH = os.getenv("DB_PATH", "bot.db")
+# =========================
 
-ADD_ADMIN, ADD_CATEGORY, ADD_COURSE = range(3)
-IST = ZoneInfo("Asia/Kolkata")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+OWNER_ID = int(os.getenv("OWNER_ID", "0") or "0")
+TIMEZONE_NAME = os.getenv("TIMEZONE", "Asia/Kolkata")
+
+DB_FILE = "bot.db"
+DEMO_MINUTES = 5
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable is missing.")
+if not OWNER_ID:
+    raise RuntimeError("OWNER_ID environment variable is missing.")
+
+try:
+    TZ = ZoneInfo(TIMEZONE_NAME)
+except Exception:
+    TZ = ZoneInfo("Asia/Kolkata")
 
 logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
 )
-log = logging.getLogger("raj-course-bot")
+logger = logging.getLogger("course_bot")
 
 
-# ============================================================
+# =========================
 # DATABASE
-# ============================================================
-def db():
-    c = sqlite3.connect(DB_PATH, timeout=30)
-    c.row_factory = sqlite3.Row
-    return c
+# =========================
+
+db_lock = asyncio.Lock()
 
 
-def init_db():
-    with db() as c:
-        c.executescript("""
-        CREATE TABLE IF NOT EXISTS admins(
-            uid INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            permissions TEXT NOT NULL DEFAULT 'demo'
-        );
+def db_connect():
+    conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
 
-        CREATE TABLE IF NOT EXISTS categories(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            emoji TEXT NOT NULL DEFAULT '\U0001f4da',
-            name TEXT NOT NULL UNIQUE
-        );
 
-        CREATE TABLE IF NOT EXISTS courses(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            category_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            tg_id TEXT NOT NULL UNIQUE
-        );
+def db_init_sync():
+    conn = db_connect()
+    cur = conn.cursor()
 
-        CREATE TABLE IF NOT EXISTS channels(
-            chat_id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            username TEXT,
-            detected_at TEXT NOT NULL
-        );
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            user_id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            username TEXT NOT NULL DEFAULT '',
+            added_by INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+    """)
 
-        CREATE TABLE IF NOT EXISTS links(
-            invite_link TEXT PRIMARY KEY,
-            chat_id TEXT NOT NULL,
-            course_id INTEGER NOT NULL,
-            course_name TEXT NOT NULL,
-            link_type TEXT NOT NULL,
-            creator_id INTEGER NOT NULL,
-            creator_name TEXT NOT NULL,
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS channels (
+            chat_id INTEGER PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT '',
+            username TEXT NOT NULL DEFAULT '',
+            invite_link TEXT NOT NULL DEFAULT '',
+            view_link TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
-            used INTEGER NOT NULL DEFAULT 0
-        );
+            updated_at TEXT NOT NULL
+        )
+    """)
 
-        CREATE TABLE IF NOT EXISTS members(
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS members (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
-            username TEXT,
-            full_name TEXT NOT NULL,
-            chat_id TEXT NOT NULL,
-            course_id INTEGER NOT NULL,
-            course_name TEXT NOT NULL,
-            invite_link TEXT NOT NULL,
-            link_type TEXT NOT NULL,
-            creator_id INTEGER NOT NULL,
-            creator_name TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            username TEXT NOT NULL DEFAULT '',
+            course TEXT NOT NULL DEFAULT '',
+            channel_id INTEGER NOT NULL DEFAULT 0,
+            channel_title TEXT NOT NULL DEFAULT '',
+            access_type TEXT NOT NULL DEFAULT 'DEMO',
+            added_by INTEGER NOT NULL DEFAULT 0,
+            added_by_name TEXT NOT NULL DEFAULT '',
             joined_at TEXT NOT NULL,
             expires_at TEXT,
-            removed_at TEXT,
-            status TEXT NOT NULL DEFAULT 'active'
-        );
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            invite_link TEXT NOT NULL DEFAULT ''
+        )
+    """)
 
-        CREATE TABLE IF NOT EXISTS settings(
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS reports_sent(
-            report_key TEXT PRIMARY KEY,
-            message_id INTEGER,
-            sent_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS report_messages(
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS activity (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            report_key TEXT NOT NULL,
-            message_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS ui_state(
-            user_id INTEGER NOT NULL,
-            chat_id INTEGER NOT NULL,
-            home_message_id INTEGER,
-            PRIMARY KEY(user_id, chat_id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_members_joined ON members(joined_at);
-        CREATE INDEX IF NOT EXISTS idx_members_creator ON members(creator_id);
-        CREATE INDEX IF NOT EXISTS idx_links_created ON links(created_at);
-        """)
-
-        defaults = [
-            ("\U0001f4da", "Teaching Exam's"),
-            ("\U0001f6a9", "Ras/Psi"),
-            ("\U0001f4dd", "EO-Ro/bstc/cet"),
-            ("\U0001f393", "Net-Jrf"),
-            ("\u2728", "Other Exam's"),
-        ]
-        for emoji, name in defaults:
-            c.execute(
-                "INSERT OR IGNORE INTO categories(emoji,name) VALUES(?,?)",
-                (emoji, name)
-            )
-
-        c.execute(
-            "INSERT OR IGNORE INTO settings(key,value) VALUES('demo_minutes','5')"
+            event_type TEXT NOT NULL,
+            user_id INTEGER NOT NULL DEFAULT 0,
+            user_name TEXT NOT NULL DEFAULT '',
+            username TEXT NOT NULL DEFAULT '',
+            admin_id INTEGER NOT NULL DEFAULT 0,
+            admin_name TEXT NOT NULL DEFAULT '',
+            course TEXT NOT NULL DEFAULT '',
+            channel_id INTEGER NOT NULL DEFAULT 0,
+            channel_title TEXT NOT NULL DEFAULT '',
+            access_type TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            details TEXT NOT NULL DEFAULT ''
         )
+    """)
 
-        if OWNER_ID:
-            c.execute(
-                "INSERT OR IGNORE INTO admins(uid,name,permissions) VALUES(?,?,?)",
-                (OWNER_ID, "Owner", "all")
-            )
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_activity_created
+        ON activity(created_at)
+    """)
 
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_members_joined
+        ON members(joined_at)
+    """)
 
-init_db()
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-def now():
-    return datetime.now(timezone.utc)
+    conn.commit()
+    conn.close()
 
 
-def ist_now():
-    return datetime.now(IST)
+async def db_init():
+    async with db_lock:
+        await asyncio.to_thread(db_init_sync)
 
 
-def iso(dt):
-    return dt.isoformat() if dt else None
+def now_local():
+    return datetime.now(TZ)
 
 
-def esc(value):
-    return html.escape(str(value or ""))
+def iso_now():
+    return now_local().isoformat(timespec="seconds")
 
 
-def user_name(user):
-    name = " ".join(
-        x for x in [getattr(user, "first_name", ""), getattr(user, "last_name", "")]
-        if x
-    ).strip()
-    return name or (
-        f"@{user.username}" if getattr(user, "username", None) else str(user.id)
-    )
-
-
-def owner(uid):
-    return bool(OWNER_ID and uid == OWNER_ID)
-
-
-def admin(uid):
-    if owner(uid):
-        return True
-    with db() as c:
-        return c.execute(
-            "SELECT 1 FROM admins WHERE uid=?", (uid,)
-        ).fetchone() is not None
-
-
-def perms(uid):
-    if owner(uid):
-        return {"all", "demo", "perm"}
-    with db() as c:
-        row = c.execute(
-            "SELECT permissions FROM admins WHERE uid=?", (uid,)
-        ).fetchone()
-    if not row:
-        return set()
-    return {x.strip().lower() for x in row["permissions"].split(",") if x.strip()}
-
-
-def can(uid, permission):
-    p = perms(uid)
-    return "all" in p or permission in p
-
-
-def admin_name(uid):
-    if owner(uid):
-        return "Owner"
-    with db() as c:
-        row = c.execute(
-            "SELECT name FROM admins WHERE uid=?", (uid,)
-        ).fetchone()
-    return row["name"] if row else f"Admin {uid}"
-
-
-def demo_minutes():
-    with db() as c:
-        row = c.execute(
-            "SELECT value FROM settings WHERE key='demo_minutes'"
-        ).fetchone()
+def parse_dt(value):
+    if not value:
+        return None
     try:
-        return int(row["value"])
-    except Exception:
-        return 5
-
-
-def rows_buttons(items, cols=2):
-    return [items[i:i + cols] for i in range(0, len(items), cols)]
-
-
-def clean_ui_text(text):
-    return str(text)
-
-
-async def safe_edit(query, text, keyboard=None):
-    try:
-        await query.edit_message_text(
-            clean_ui_text(text),
-            reply_markup=keyboard,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True
-        )
-    except Exception as e:
-        log.warning("edit: %s", e)
-
-
-def local_dt(value):
-    try:
-        return datetime.fromisoformat(value).astimezone(IST)
+        return datetime.fromisoformat(value)
     except Exception:
         return None
 
 
-def local_date(value):
-    d = local_dt(value)
-    return d.date().isoformat() if d else str(value)[:10]
+async def db_execute(sql, params=(), fetch=False, fetchone=False, commit=True):
+    async with db_lock:
+        def work():
+            conn = db_connect()
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            rows = cur.fetchall() if fetch else None
+            row = cur.fetchone() if fetchone else None
+            if commit:
+                conn.commit()
+            conn.close()
+            return row if fetchone else rows
+        return await asyncio.to_thread(work)
 
 
-def local_time(value):
-    d = local_dt(value)
-    return d.strftime("%d/%m/%Y %H:%M:%S IST") if d else str(value)
+# =========================
+# HELPERS
+# =========================
+
+def user_display(user):
+    if not user:
+        return "Unknown"
+    name = " ".join(x for x in [user.first_name, user.last_name] if x).strip()
+    return name or (f"@{user.username}" if user.username else str(user.id))
 
 
-# ============================================================
-# HOME / AUTO-DETECTED CHANNELS
-# ============================================================
-def home_keyboard(uid=None):
-    """Owner sees ONLY Owner Panel + Daily Report."""
-    uid = uid if uid is not None else OWNER_ID
-
-    if owner(uid):
-        return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("\u2699\ufe0f OWNER PANEL", callback_data="owner"),
-                InlineKeyboardButton("\U0001f4ca DAILY REPORT", callback_data="reports"),
-            ]
-        ])
-
-    with db() as c:
-        cats = c.execute(
-            "SELECT id,emoji,name FROM categories ORDER BY id"
-        ).fetchall()
-
-    buttons = [
-        InlineKeyboardButton(
-            f"{r['emoji']} {r['name']}",
-            callback_data=f"cat:{r['id']}"
-        )
-        for r in cats
-    ]
-    return InlineKeyboardMarkup(rows_buttons(buttons, 2))
+def user_label(user_id, name="", username=""):
+    if username:
+        return f"{name or username} (@{username.lstrip('@')})"
+    return name or str(user_id)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+def fmt_dt(value):
+    dt = parse_dt(value)
+    if not dt:
+        return "-"
+    return dt.astimezone(TZ).strftime("%d/%m/%Y %H:%M:%S")
 
-    # Do not process the exact same Telegram update twice.
-    if update.update_id is not None and not claim_event(f"start:{update.update_id}", ttl=3600):
-        return
 
-    if not admin(uid):
-        msg = (
-            "\u274c <b>ACCESS DENIED</b>\n\n"
-            "\U0001f512 Aapko is bot ka access nahi diya gaya hai."
-        )
-        if update.message:
-            await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
-        elif update.callback_query:
-            await update.callback_query.answer("\u274c Access Denied", show_alert=True)
-        return
+def html_link(url, text):
+    if not url:
+        return escape(text)
+    return f'<a href="{escape(url, quote=True)}">{escape(text)}</a>'
 
-    text = (
-        "\U0001f338 <b>HELLO SELLER FAMILY, KESE HO?</b>\n\n"
-        "\u2728 <b>I AM WIZARD</b> \U0001f338\U0001f495\n\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-        "\U0001f50e <b>COURSE SEARCH</b>\n\n"
-        "<b>Telegram ke kisi bhi chat me likho:</b>\n"
-        "<code>@YourBotUsername course-name</code>\n\n"
-        "\U0001f449 <b>Search result me course select karo.</b>\n\n"
-        "\U0001f48e <i>Fast \u2022 Clean \u2022 Secure Access System</i>"
+
+async def is_owner(user_id):
+    return int(user_id) == OWNER_ID
+
+
+async def is_admin(user_id):
+    if int(user_id) == OWNER_ID:
+        return True
+    row = await db_execute(
+        "SELECT user_id FROM admins WHERE user_id=?",
+        (int(user_id),),
+        fetchone=True,
     )
-    keyboard = home_keyboard(uid)
+    return bool(row)
 
-    # For /start, update the existing bot home message instead of creating
-    # another one. This prevents the repeated HOME screen seen in the chat.
-    if update.message:
-        chat_id = update.effective_chat.id
-        old_message_id = None
-        with db() as c:
-            row = c.execute(
-                "SELECT home_message_id FROM ui_state WHERE user_id=? AND chat_id=?",
-                (uid, chat_id)
-            ).fetchone()
-            if row:
-                old_message_id = row["home_message_id"]
 
-        if old_message_id:
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=int(old_message_id),
-                    text=text,
-                    reply_markup=keyboard,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True
-                )
-                return
-            except Exception:
-                pass
+async def actor_name(context, user_id):
+    try:
+        chat = await context.bot.get_chat(int(user_id))
+        return user_display(chat)
+    except Exception:
+        return str(user_id)
 
-        sent = await update.message.reply_text(
-            text,
-            reply_markup=keyboard,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True
+
+async def log_activity(
+    event_type,
+    *,
+    user_id=0,
+    user_name="",
+    username="",
+    admin_id=0,
+    admin_name="",
+    course="",
+    channel_id=0,
+    channel_title="",
+    access_type="",
+    details="",
+):
+    await db_execute(
+        """
+        INSERT INTO activity
+        (event_type,user_id,user_name,username,admin_id,admin_name,course,
+         channel_id,channel_title,access_type,created_at,details)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            event_type,
+            int(user_id or 0),
+            user_name,
+            username or "",
+            int(admin_id or 0),
+            admin_name,
+            course,
+            int(channel_id or 0),
+            channel_title,
+            access_type,
+            iso_now(),
+            details,
+        ),
+    )
+
+
+def home_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("âï¸ OWNER PANEL", callback_data="owner_panel"),
+            InlineKeyboardButton("ð DAILY REPORT", callback_data="daily_report"),
+        ]
+    ])
+
+
+def owner_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("ð¥ ADMINS", callback_data="admins"),
+            InlineKeyboardButton("â±ï¸ DEMO TIME", callback_data="demo_time"),
+        ],
+        [
+            InlineKeyboardButton("ð DAILY REPORT", callback_data="daily_report"),
+            InlineKeyboardButton("ð¡ CHANNELS", callback_data="channels"),
+        ],
+        [
+            InlineKeyboardButton("ð  HOME", callback_data="home"),
+        ],
+    ])
+
+
+def report_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("ð LAST 1 HOUR", callback_data="report_1h"),
+            InlineKeyboardButton("ð LAST 24 HOURS", callback_data="report_24h"),
+        ],
+        [InlineKeyboardButton("â¬ï¸ OWNER PANEL", callback_data="owner_panel")],
+    ])
+
+
+def back_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("â¬ï¸ BACK", callback_data="owner_panel")]
+    ])
+
+
+# =========================
+# CHANNEL AUTO-DETECT
+# =========================
+
+async def save_channel_from_chat(context, chat_id):
+    try:
+        chat = await context.bot.get_chat(chat_id)
+    except TelegramError as e:
+        logger.warning("Cannot get channel %s: %s", chat_id, e)
+        return None
+
+    if chat.type != ChatType.CHANNEL:
+        return None
+
+    title = chat.title or str(chat_id)
+    username = chat.username or ""
+
+    # Try to create a reusable permanent invite link.
+    invite = ""
+    try:
+        invite_obj = await context.bot.create_chat_invite_link(
+            chat_id=chat_id,
+            name="Course Bot Access",
+            creates_join_request=False,
         )
-        with db() as c:
-            c.execute(
-                """
-                INSERT INTO ui_state(user_id,chat_id,home_message_id)
-                VALUES(?,?,?)
-                ON CONFLICT(user_id,chat_id)
-                DO UPDATE SET home_message_id=excluded.home_message_id
-                """,
-                (uid, chat_id, sent.message_id)
-            )
-            c.commit()
-        return
+        invite = invite_obj.invite_link or ""
+    except TelegramError as e:
+        logger.warning("Invite creation failed for %s: %s", chat_id, e)
 
-    # Callback / Home button: edit the current message in-place.
-    if update.callback_query:
-        await update.callback_query.answer()
-        await safe_edit(update.callback_query, text, keyboard)
+    # For public channels, /1 is normally the first channel post.
+    view_link = ""
+    if username:
+        view_link = f"https://t.me/{username}/1"
+
+    await db_execute(
+        """
+        INSERT INTO channels
+        (chat_id,title,username,invite_link,view_link,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(chat_id) DO UPDATE SET
+            title=excluded.title,
+            username=excluded.username,
+            invite_link=CASE
+                WHEN excluded.invite_link <> '' THEN excluded.invite_link
+                ELSE channels.invite_link
+            END,
+            view_link=CASE
+                WHEN excluded.view_link <> '' THEN excluded.view_link
+                ELSE channels.view_link
+            END,
+            updated_at=excluded.updated_at
+        """,
+        (
+            chat_id,
+            title,
+            username,
+            invite,
+            view_link,
+            iso_now(),
+            iso_now(),
+        ),
+    )
+
+    await log_activity(
+        "CHANNEL_DETECTED",
+        channel_id=chat_id,
+        channel_title=title,
+        details="Bot detected/updated channel automatically",
+    )
+
+    return {
+        "chat_id": chat_id,
+        "title": title,
+        "username": username,
+        "invite_link": invite,
+        "view_link": view_link,
+    }
 
 
-async def bot_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def my_chat_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cm = update.my_chat_member
     if not cm:
         return
 
-    chat = update.effective_chat
-    if not chat or chat.type not in ("channel", "supergroup"):
+    chat = cm.chat
+    if chat.type != ChatType.CHANNEL:
         return
 
-    new = cm.new_chat_member
-    if new.status not in ("administrator", "creator"):
-        if new.status in ("left", "kicked"):
-            with db() as c:
-                c.execute(
-                    "DELETE FROM channels WHERE chat_id=?",
-                    (str(chat.id),)
+    new_status = cm.new_chat_member.status
+
+    if new_status in ("administrator", "creator"):
+        info = await save_channel_from_chat(context, chat.id)
+        if info:
+            try:
+                await context.bot.send_message(
+                    OWNER_ID,
+                    (
+                        "ð¡ <b>Channel Auto-Detected</b>\n\n"
+                        f"ð¢ <b>Channel:</b> {escape(info['title'])}\n"
+                        f"ð <code>{info['chat_id']}</code>\n\n"
+                        "â Bot administrator detected.\n"
+                        "Channel is now available in Course Search."
+                    ),
+                    parse_mode=ParseMode.HTML,
                 )
+            except TelegramError:
+                pass
+
+
+# =========================
+# HOME / START
+# =========================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user:
         return
 
-    # Save every channel where this bot becomes admin.
-    title = getattr(chat, "title", None) or str(chat.id)
-    username = getattr(chat, "username", None)
+    # Ignore duplicate /start commands arriving almost simultaneously.
+    key = f"start_lock:{user.id}"
+    if context.user_data.get(key):
+        return
+    context.user_data[key] = True
 
-    with db() as c:
-        c.execute(
-            """
-            INSERT INTO channels(chat_id,title,username,detected_at)
-            VALUES(?,?,?,?)
-            ON CONFLICT(chat_id) DO UPDATE SET
-                title=excluded.title,
-                username=excluded.username
-            """,
-            (str(chat.id), title, username, iso(now()))
+    try:
+        text = (
+            "ð¸ <b>HELLO SELLER FAMILY, KESE HO?</b>\n\n"
+            "â¨ <b>I AM WIZARD</b> ð¸ ð\n\n"
+            "ð <b>COURSE SEARCH</b>\n"
+            "Telegram ke kisi bhi chat me likho:\n"
+            "<code>@YourBotUsername course-name</code>\n\n"
+            "Search result me apna course select karo.\n\n"
+            "ð¡ <b>CHANNEL AUTO-DETECT</b>\n"
+            "Bot ko channel me administrator banao â "
+            "channel automatically detect ho jayega.\n\n"
+            "â¡ <i>Fast â¢ Clean â¢ Secure Access System</i>"
         )
 
-    log.info("Detected channel: %s (%s)", title, chat.id)
-
-    # Automatically create a course if this channel isn't registered.
-    with db() as c:
-        existing = c.execute(
-            "SELECT id FROM courses WHERE tg_id=?",
-            (str(chat.id),)
-        ).fetchone()
-        cat = c.execute(
-            "SELECT id FROM categories ORDER BY id LIMIT 1"
-        ).fetchone()
-
-        if not existing and cat:
-            c.execute(
-                """
-                INSERT OR IGNORE INTO courses(category_id,name,tg_id)
-                VALUES(?,?,?)
-                """,
-                (cat["id"], title, str(chat.id))
-            )
-
-    if OWNER_ID:
-        try:
-            await context.bot.send_message(
-                OWNER_ID,
-                "\U0001f4e1 <b>CHANNEL AUTO-DETECTED</b>\n\n"
-                f"\U0001f4da Channel: <b>{esc(title)}</b>\n"
-                f"\U0001f194 ID: <code>{chat.id}</code>\n\n"
-                "Channel ko automatically course list me add kar diya.",
-                parse_mode=ParseMode.HTML
-            )
-        except Exception:
-            pass
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=home_keyboard(),
+            disable_web_page_preview=True,
+        )
+    finally:
+        # Keep only a short duplicate guard.
+        await asyncio.sleep(1)
+        context.user_data.pop(key, None)
 
 
-async def channels_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if not admin(q.from_user.id):
-        await q.answer("\u274c Access denied", show_alert=True)
+# =========================
+# OWNER PANEL
+# =========================
+
+async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer()
+        user_id = query.from_user.id
+        send = query.edit_message_text
+    else:
+        user_id = update.effective_user.id
+        send = update.message.reply_text
+
+    if not await is_owner(user_id):
+        if query:
+            await query.answer("â Owner access only.", show_alert=True)
+        else:
+            await send("â Owner access only.")
         return
-    await q.answer()
-
-    with db() as c:
-        rows = c.execute(
-            "SELECT * FROM channels ORDER BY title"
-        ).fetchall()
-
-    kb = []
-    for r in rows:
-        kb.append([
-            InlineKeyboardButton(
-                f"\U0001f4e1 {r['title']}",
-                callback_data=f"detected:{r['chat_id']}"
-            )
-        ])
-    kb.append([InlineKeyboardButton("\u2b05\ufe0f Home", callback_data="home")])
 
     text = (
-        "\U0001f4e1 <b>AUTO-DETECTED CHANNELS</b>\n\n"
-        "Bot ko administrator banate hi channel yahan automatically aata hai.\n\n"
-        f"Total: <b>{len(rows)}</b>"
+        "ð <b>OWNER PANEL</b>\n\n"
+        "ð ï¸ <b>Control Center</b>\n"
+        "Yahan se bot ka admin, demo aur channel system manage karo.\n\n"
+        "ð¡ Bot ko channel me administrator banate hi "
+        "channel automatically detect hoga."
     )
-    await safe_edit(q, text, InlineKeyboardMarkup(kb))
+
+    await send(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=owner_keyboard(),
+    )
 
 
-async def detected_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# ADMINS
+# =========================
+
+async def admins_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    if not admin(q.from_user.id):
-        await q.answer("\u274c Access denied", show_alert=True)
-        return
     await q.answer()
 
-    chat_id = q.data.split(":", 1)[1]
-    with db() as c:
-        channel = c.execute(
-            "SELECT * FROM channels WHERE chat_id=?",
-            (chat_id,)
-        ).fetchone()
-        courses = c.execute(
-            "SELECT * FROM courses WHERE tg_id=?",
-            (chat_id,)
-        ).fetchall()
+    if not await is_owner(q.from_user.id):
+        await q.answer("â Owner only.", show_alert=True)
+        return
+
+    rows = await db_execute(
+        "SELECT * FROM admins ORDER BY created_at DESC",
+        fetch=True,
+    )
+
+    lines = ["ð¥ <b>ADMINS</b>\n"]
+
+    if not rows:
+        lines.append("No additional admins added.")
+    else:
+        for i, r in enumerate(rows, 1):
+            lines.append(
+                f"<b>{i}.</b> {escape(user_label(r['user_id'], r['name'], r['username']))}\n"
+                f"ð <code>{r['user_id']}</code>\n"
+                f"ð Added: {escape(fmt_dt(r['created_at']))}\n"
+            )
+
+    lines.append("\nâ Add with: <code>/addadmin USER_ID</code>")
+    lines.append("â Remove with: <code>/deladmin USER_ID</code>")
+
+    await q.edit_message_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=back_keyboard(),
+    )
+
+
+async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_owner(update.effective_user.id):
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: <code>/addadmin USER_ID</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        uid = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("â Invalid user ID.")
+        return
+
+    try:
+        u = await context.bot.get_chat(uid)
+        name = user_display(u)
+        username = u.username or ""
+    except TelegramError:
+        name = str(uid)
+        username = ""
+
+    await db_execute(
+        """
+        INSERT INTO admins(user_id,name,username,added_by,created_at)
+        VALUES(?,?,?,?,?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            name=excluded.name,
+            username=excluded.username
+        """,
+        (uid, name, username, OWNER_ID, iso_now()),
+    )
+
+    await log_activity(
+        "ADMIN_ADDED",
+        user_id=uid,
+        user_name=name,
+        username=username,
+        admin_id=OWNER_ID,
+        admin_name="OWNER",
+    )
+
+    await update.message.reply_text(
+        f"â <b>Admin added</b>\n\nð¤ {escape(name)}\nð <code>{uid}</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def del_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_owner(update.effective_user.id):
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: <code>/deladmin USER_ID</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        uid = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("â Invalid user ID.")
+        return
+
+    await db_execute("DELETE FROM admins WHERE user_id=?", (uid,))
+    await update.message.reply_text(
+        f"â Admin <code>{uid}</code> removed.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+# =========================
+# DEMO TIME
+# =========================
+
+async def demo_time_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    if not await is_owner(q.from_user.id):
+        await q.answer("â Owner only.", show_alert=True)
+        return
+
+    await q.edit_message_text(
+        (
+            "â±ï¸ <b>DEMO TIME</b>\n\n"
+            f"Current Demo duration: <b>{DEMO_MINUTES} minutes</b>\n\n"
+            "Demo member ko channel join karne ke baad "
+            "5 minutes me automatically remove kiya jayega."
+        ),
+        parse_mode=ParseMode.HTML,
+        reply_markup=back_keyboard(),
+    )
+
+
+# =========================
+# CHANNELS
+# =========================
+
+async def channels_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    if not await is_owner(q.from_user.id):
+        await q.answer("â Owner only.", show_alert=True)
+        return
+
+    rows = await db_execute(
+        "SELECT * FROM channels ORDER BY title COLLATE NOCASE",
+        fetch=True,
+    )
+
+    lines = ["ð¡ <b>DETECTED CHANNELS</b>\n"]
+
+    if not rows:
+        lines.append("No channels detected yet.\n")
+        lines.append("Bot ko kisi channel me administrator banao.")
+    else:
+        for i, r in enumerate(rows, 1):
+            lines.append(
+                f"<b>{i}. {escape(r['title'])}</b>\n"
+                f"ð <code>{r['chat_id']}</code>\n"
+                f"ð {html_link(r['invite_link'], 'Invite Link') if r['invite_link'] else 'Invite unavailable'}\n"
+                f"ð {html_link(r['view_link'], 'View Link') if r['view_link'] else 'View link unavailable'}\n"
+            )
+
+    await q.edit_message_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=back_keyboard(),
+    )
+
+
+# =========================
+# ACCESS MESSAGE
+# =========================
+
+def access_message(
+    *,
+    access_type,
+    course,
+    invite_link,
+    view_link,
+):
+    if access_type == "DEMO":
+        heading = "ð <b>Access Granted: Demo Pass</b> â³"
+        instruction = (
+            "â ï¸ à¤¯à¤¹ <b>Demo Joining Link à¤à¥à¤µà¤² 1 à¤¬à¤¾à¤° à¤à¤¾à¤® à¤à¤°à¥à¤à¤¾à¥¤</b>\n"
+            f"â±ï¸ à¤¸à¤¿à¤¸à¥à¤à¤® à¤à¤ªà¤à¥ à¤à¥à¤¨à¤² à¤®à¥à¤ à¤à¥à¤¡à¤¼à¤¨à¥ à¤à¥ <b>{DEMO_MINUTES} à¤®à¤¿à¤¨à¤ à¤¬à¤¾à¤¦ automatically remove</b> à¤à¤° à¤¦à¥à¤à¤¾à¥¤"
+        )
+    else:
+        heading = "ð <b>Access Granted: Permanent Pass</b> ð"
+        instruction = (
+            "ð <b>à¤®à¤¹à¤¤à¥à¤µà¤ªà¥à¤°à¥à¤£ à¤¨à¤¿à¤°à¥à¤¦à¥à¤¶ (Important):</b>\n"
+            "ð« à¤¯à¤¹ Permanent Joining Link à¤à¥à¤µà¤² à¤à¤ à¤¬à¤¾à¤° à¤à¥ à¤²à¤¿à¤ à¤¹à¥à¥¤ "
+            "à¤à¥à¤µà¤¾à¤à¤¨ à¤à¤°à¤¤à¥ à¤¹à¥ à¤¯à¤¹ expire à¤¹à¥ à¤à¤¾à¤à¤à¤¾à¥¤\n"
+            "â à¤à¥à¤ªà¤¯à¤¾ à¤à¤à¥ à¤¸à¥ à¤à¥à¤²à¤¾à¤¸ à¤¦à¥à¤à¤¨à¥ à¤à¥ à¤²à¤¿à¤ à¤¹à¤®à¥à¤¶à¤¾ à¤à¤ªà¤° à¤¦à¤¿à¤ à¤à¤ "
+            "<b>Course Material Link</b> à¤à¤¾ à¤¹à¥ à¤à¤ªà¤¯à¥à¤ à¤à¤°à¥à¤à¥¤"
+        )
+
+    return (
+        f"{heading}\n"
+        "âââââââââââââââââââââ\n\n"
+        f"ð¢ <b>à¤à¥à¤¨à¤² / à¤à¥à¤°à¥à¤¸ à¤à¤¾ à¤¨à¤¾à¤®:</b>\n"
+        f"âªï¸ {escape(course)}\n\n"
+        "ð¥ <b>à¤¯à¤¹à¤¾à¤ à¤¸à¥ à¤à¥à¤µà¤¾à¤à¤¨ à¤à¤°à¥à¤ (Joining Link):</b>\n"
+        f"ð {html_link(invite_link, invite_link or 'Link unavailable')}\n\n"
+        "ð¥ï¸ <b>à¤à¥à¤°à¥à¤¸ à¤®à¤à¥à¤°à¤¿à¤¯à¤² à¤¯à¤¹à¤¾à¤ à¤¦à¥à¤à¥à¤ (View Link):</b>\n"
+        f"ð {html_link(view_link, view_link or 'View link unavailable')}\n\n"
+        "ð <b>à¤®à¤¹à¤¤à¥à¤µà¤ªà¥à¤°à¥à¤£ à¤¨à¤¿à¤°à¥à¤¦à¥à¤¶ (Important):</b>\n"
+        f"{instruction}"
+    )
+
+
+# =========================
+# INVITE / ACCESS
+# =========================
+
+async def create_single_use_invite(context, channel_id, user_id, access_type):
+    """
+    Telegram invite links cannot universally be restricted to one exact user.
+    We use member_limit=1 for a single-use link and log the intended recipient.
+    """
+    expire_dt = datetime.now(timezone.utc) + timedelta(minutes=30)
+
+    try:
+        inv = await context.bot.create_chat_invite_link(
+            chat_id=channel_id,
+            name=f"{access_type}-{user_id}",
+            expire_date=expire_dt,
+            member_limit=1,
+            creates_join_request=False,
+        )
+        return inv.invite_link
+    except TelegramError as e:
+        logger.error("Invite creation failed: %s", e)
+        return ""
+
+
+async def grant_access(
+    context,
+    *,
+    admin_id,
+    member_user,
+    channel_id,
+    access_type,
+):
+    channel = await db_execute(
+        "SELECT * FROM channels WHERE chat_id=?",
+        (channel_id,),
+        fetchone=True,
+    )
 
     if not channel:
-        await safe_edit(
-            q,
-            "\u274c Channel not found.",
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton("\u2b05\ufe0f Channels", callback_data="channels")]
-            ])
-        )
-        return
+        return None, "Channel not found. Bot must be admin in the channel."
 
-    text = (
-        "\U0001f4e1 <b>CHANNEL</b>\n\n"
-        f"\U0001f4da Name: <b>{esc(channel['title'])}</b>\n"
-        f"\U0001f194 ID: <code>{esc(chat_id)}</code>\n\n"
-        f"\U0001f4d6 Registered courses: <b>{len(courses)}</b>\n"
-    )
-    kb = []
-    for r in courses:
-        kb.append([
-            InlineKeyboardButton(
-                f"\U0001f4da {r['name']}",
-                callback_data=f"course:{r['id']}"
-            )
-        ])
-    kb.append([
-        InlineKeyboardButton("\u2b05\ufe0f Channels", callback_data="channels")
-    ])
-
-    await safe_edit(q, text, InlineKeyboardMarkup(kb))
-
-
-# ============================================================
-# CATEGORY / COURSE
-# ============================================================
-async def category(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    cid = int(q.data.split(":")[1])
-
-    with db() as c:
-        cat = c.execute(
-            "SELECT * FROM categories WHERE id=?", (cid,)
-        ).fetchone()
-        courses = c.execute(
-            "SELECT * FROM courses WHERE category_id=? ORDER BY name",
-            (cid,)
-        ).fetchall()
-
-    if not cat:
-        return
-
-    kb = rows_buttons([
-        InlineKeyboardButton(
-            f"\U0001f4da {r['name']}",
-            callback_data=f"course:{r['id']}"
-        )
-        for r in courses
-    ], 2)
-
-    kb.append([InlineKeyboardButton("\u2b05\ufe0f Home", callback_data="home")])
-
-    await safe_edit(
-        q,
-        f"{cat['emoji']} <b>{esc(cat['name'])}</b>\n\n"
-        f"Courses: <b>{len(courses)}</b>",
-        InlineKeyboardMarkup(kb)
+    course = channel["title"]
+    invite = await create_single_use_invite(
+        context,
+        channel_id,
+        member_user.id,
+        access_type,
     )
 
+    if not invite:
+        return None, "Unable to create invite link. Check bot admin permissions."
 
-async def course(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    course_id = int(q.data.split(":")[1])
+    view_link = channel["view_link"]
 
-    with db() as c:
-        r = c.execute(
-            "SELECT * FROM courses WHERE id=?", (course_id,)
-        ).fetchone()
+    admin_name = await actor_name(context, admin_id)
+    member_name = user_display(member_user)
+    username = member_user.username or ""
 
-    if not r:
-        await q.answer("\u274c Course not found", show_alert=True)
-        return
+    joined = now_local()
+    expires = joined + timedelta(minutes=DEMO_MINUTES) if access_type == "DEMO" else None
 
-    buttons = []
-    if can(q.from_user.id, "demo"):
-        buttons.append(
-            InlineKeyboardButton(
-                "\U0001f517 Demo Link",
-                callback_data=f"link:demo:{course_id}"
+    await db_execute(
+        """
+        INSERT INTO members
+        (user_id,name,username,course,channel_id,channel_title,access_type,
+         added_by,added_by_name,joined_at,expires_at,status,invite_link)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            member_user.id,
+            member_name,
+            username,
+            course,
+            channel_id,
+            course,
+            access_type,
+            admin_id,
+            admin_name,
+            joined.isoformat(timespec="seconds"),
+            expires.isoformat(timespec="seconds") if expires else None,
+            "PENDING",
+            invite,
+        ),
+    )
+
+    await log_activity(
+        "ACCESS_GRANTED",
+        user_id=member_user.id,
+        user_name=member_name,
+        username=username,
+        admin_id=admin_id,
+        admin_name=admin_name,
+        course=course,
+        channel_id=channel_id,
+        channel_title=course,
+        access_type=access_type,
+        details="Access link generated",
+    )
+
+    if access_type == "DEMO":
+        context.application.create_task(
+            demo_expiry_task(
+                context.application,
+                channel_id,
+                member_user.id,
+                course,
             )
         )
-    if can(q.from_user.id, "perm"):
-        buttons.append(
-            InlineKeyboardButton(
-                "\U0001f464 Permanent Link",
-                callback_data=f"link:perm:{course_id}"
-            )
-        )
 
-    if not buttons:
-        await q.answer("\u274c No access", show_alert=True)
-        return
-
-    kb = rows_buttons(buttons, 2)
-    kb.append([
-        InlineKeyboardButton(
-            "\u2b05\ufe0f Back",
-            callback_data=f"cat:{r['category_id']}"
-        )
-    ])
-
-    await safe_edit(
-        q,
-        f"\U0001f4da <b>{esc(r['name'])}</b>\n\n"
-        "Choose an access link below:",
-        InlineKeyboardMarkup(kb)
+    return (
+        access_message(
+            access_type=access_type,
+            course=course,
+            invite_link=invite,
+            view_link=view_link,
+        ),
+        None,
     )
 
 
-# ============================================================
-# TELEGRAM PERMISSION CHECK + LINK CREATION
-# ============================================================
-async def permission_check(bot, chat_id, demo=False):
-    try:
-        me = await bot.get_me()
-        member = await bot.get_chat_member(chat_id, me.id)
-
-        if member.status not in ("administrator", "creator"):
-            return False, (
-                f"Bot status: <b>{esc(member.status)}</b>\n"
-                "Bot ko isi channel me administrator banana zaroori hai."
-            )
-
-        if member.status == "creator":
-            return True, ""
-
-        invite = getattr(member, "can_invite_users", None)
-        restrict = getattr(member, "can_restrict_members", None)
-
-        if invite is not True:
-            return False, (
-                "\u274c <b>Add Subscribers / Invite Users via Link</b> OFF hai.\n"
-                f"Invite permission: <code>{invite}</code>\n\n"
-                "Channel \u2192 Administrators \u2192 Bot \u2192 "
-                "Add Subscribers ON \u2192 Save."
-            )
-
-        if demo and restrict is not True:
-            return False, (
-                "\u274c Demo auto-remove ke liye <b>Ban Users</b> ON hona chahiye.\n"
-                f"Ban Users: <code>{restrict}</code>"
-            )
-
-        return True, ""
-    except Exception as e:
-        return False, f"\u274c Telegram check failed:\n<code>{esc(e)}</code>"
-
-
-async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    _, link_type, course_id_s = q.data.split(":")
-    course_id = int(course_id_s)
-
-    if not can(q.from_user.id, link_type):
-        await q.answer("\u274c Permission denied", show_alert=True)
-        return
-
-    with db() as c:
-        course_row = c.execute(
-            "SELECT * FROM courses WHERE id=?", (course_id,)
-        ).fetchone()
-
-    if not course_row:
-        await q.answer("\u274c Course not found", show_alert=True)
-        return
-
-    chat_id = int(course_row["tg_id"])
-    ok, reason = await permission_check(
-        context.bot,
-        chat_id,
-        demo=(link_type == "demo")
-    )
-
-    if not ok:
-        await safe_edit(
-            q,
-            "\u274c <b>Link create nahi hua</b>\n\n"
-            f"\U0001f4da Course: <b>{esc(course_row['name'])}</b>\n\n"
-            f"{reason}\n\n"
-            "Permission save karne ke baad /checkchannel chalao.",
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    "\u2b05\ufe0f Back",
-                    callback_data=f"course:{course_id}"
-                )]
-            ])
-        )
-        return
+async def demo_expiry_task(application, channel_id, user_id, course):
+    await asyncio.sleep(DEMO_MINUTES * 60)
 
     try:
-        created = now()
-        creator = admin_name(q.from_user.id)
+        # Check if still present.
+        member = await application.bot.get_chat_member(channel_id, user_id)
 
-        invite = await context.bot.create_chat_invite_link(
-            chat_id=chat_id,
-            name=f"{link_type}_{q.from_user.id}_{created.strftime('%Y%m%d%H%M%S')}",
-            member_limit=1,
-            creates_join_request=False
-        )
-
-        with db() as c:
-            c.execute(
-                """
-                INSERT OR REPLACE INTO links(
-                    invite_link,chat_id,course_id,course_name,link_type,
-                    creator_id,creator_name,created_at,used
-                ) VALUES(?,?,?,?,?,?,?,?,0)
-                """,
-                (
-                    invite.invite_link,
-                    str(chat_id),
-                    course_id,
-                    course_row["name"],
-                    link_type,
-                    q.from_user.id,
-                    creator,
-                    iso(created)
+        if member.status in ("member", "restricted"):
+            try:
+                await application.bot.ban_chat_member(
+                    channel_id,
+                    user_id,
+                    revoke_messages=False,
                 )
-            )
+                await application.bot.unban_chat_member(
+                    channel_id,
+                    user_id,
+                    only_if_banned=True,
+                )
+            except TelegramError as e:
+                logger.warning("Demo removal failed for %s: %s", user_id, e)
 
-        # ---------- ACCESS / COURSE MATERIAL MESSAGE ----------
-        with db() as c:
-            ch_row = c.execute(
-                "SELECT username FROM channels WHERE chat_id=?",
-                (str(chat_id),)
-            ).fetchone()
-
-        channel_username = (ch_row["username"] or "").strip() if ch_row else ""
-
-        if channel_username:
-            channel_username = channel_username.lstrip("@")
-            material_url = f"https://t.me/{channel_username}"
-        else:
-            raw_chat_id = str(chat_id)
-            internal_id = raw_chat_id[4:] if raw_chat_id.startswith("-100") else raw_chat_id
-            material_url = f"https://t.me/c/{internal_id}/1"
-
-        access_type = "Permanent" if link_type == "permanent" else "Demo"
-
-        text = (
-            "ð¥ <b>à¤¯à¤¹à¤¾à¤ à¤¸à¥ à¤à¥à¤µà¤¾à¤à¤¨ à¤à¤°à¥à¤ (Joining Link):</b>\n"
-            f'ð <a href="{esc(invite.invite_link)}">{esc(invite.invite_link)}</a>\n\n'
-            "ð¥ <b>à¤à¥à¤°à¥à¤¸ à¤®à¤à¥à¤°à¤¿à¤¯à¤² à¤¯à¤¹à¤¾à¤ à¤¦à¥à¤à¥à¤ (View Link):</b>\n"
-            f'ð <a href="{esc(material_url)}">{esc(material_url)}</a>\n\n'
-            "ð <b>à¤®à¤¹à¤¤à¥à¤µà¤ªà¥à¤°à¥à¤£ à¤¨à¤¿à¤°à¥à¤¦à¥à¤¶ (Important):</b>\n"
-            f"ð« à¤¯à¤¹ {access_type} Joining Link à¤à¥à¤µà¤² à¤à¤ à¤¬à¤¾à¤° à¤à¥ à¤²à¤¿à¤ à¤¹à¥à¥¤ "
-            "à¤à¥à¤µà¤¾à¤à¤¨ à¤à¤°à¤¤à¥ à¤¹à¥ à¤¯à¤¹ à¤¤à¥à¤°à¤à¤¤ Expire à¤¹à¥ à¤à¤¾à¤à¤à¤¾à¥¤\n"
-            "â à¤à¥à¤ªà¤¯à¤¾ à¤à¤à¥ à¤¸à¥ à¤à¥à¤²à¤¾à¤¸ à¤¦à¥à¤à¤¨à¥ à¤à¥ à¤²à¤¿à¤ à¤¹à¤®à¥à¤¶à¤¾ à¤à¤ªà¤° à¤¦à¤¿à¤ à¤à¤ "
-            "'à¤à¥à¤°à¥à¤¸ à¤®à¤à¥à¤°à¤¿à¤¯à¤² à¤²à¤¿à¤à¤' à¤à¤¾ à¤¹à¥ à¤à¤ªà¤¯à¥à¤ à¤à¤°à¥à¤à¥¤"
+        await db_execute(
+            """
+            UPDATE members
+            SET status='EXPIRED'
+            WHERE user_id=? AND channel_id=? AND access_type='DEMO'
+              AND status IN ('PENDING','ACTIVE')
+            """,
+            (user_id, channel_id),
         )
 
-        await safe_edit(
-            q,
-            text,
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    "\u2b05\ufe0f Back",
-                    callback_data=f"course:{course_id}"
-                )]
-            ])
+        await log_activity(
+            "DEMO_EXPIRED",
+            user_id=user_id,
+            course=course,
+            channel_id=channel_id,
+            channel_title=course,
+            access_type="DEMO",
+            details="Demo expired after 5 minutes",
         )
-
-    except Exception as e:
-        log.exception("link creation")
-        await safe_edit(
-            q,
-            "\u274c <b>Telegram link creation failed</b>\n\n"
-            f"<code>{esc(e)}</code>",
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    "\u2b05\ufe0f Back",
-                    callback_data=f"course:{course_id}"
-                )]
-            ])
-        )
+    except TelegramError:
+        pass
+    except Exception:
+        logger.exception("Demo expiry task failed")
 
 
-# ============================================================
-# MEMBER TRACKING
-# ============================================================
-async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# MEMBER JOIN TRACKING
+# =========================
+
+async def member_update_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cm = update.chat_member
     if not cm:
         return
 
-    old = cm.old_chat_member.status
-    new = cm.new_chat_member.status
-
-    if new not in ("member", "administrator"):
-        return
-    if old not in ("left", "kicked"):
+    chat = cm.chat
+    if chat.type != ChatType.CHANNEL:
         return
 
-    invite = getattr(cm, "invite_link", None)
-    invite_url = getattr(invite, "invite_link", None) if invite else None
-    if not invite_url:
+    new_member = cm.new_chat_member
+    old_member = cm.old_chat_member
+
+    joined = (
+        new_member.status in ("member", "restricted")
+        and old_member.status in ("left", "kicked")
+    )
+    if not joined:
         return
 
-    with db() as c:
-        link = c.execute(
-            "SELECT * FROM links WHERE invite_link=?",
-            (invite_url,)
-        ).fetchone()
-
-    if not link:
-        return
-
-    u = cm.from_user
-    joined = cm.date or now()
-    expires = (
-        joined + timedelta(minutes=demo_minutes())
-        if link["link_type"] == "demo" else None
+    user = new_member.user
+    row = await db_execute(
+        """
+        SELECT * FROM members
+        WHERE user_id=? AND channel_id=? AND status='PENDING'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (user.id, chat.id),
+        fetchone=True,
     )
 
-    with db() as c:
-        # Keep historical rows. Never delete a demo member from reports.
-        c.execute(
-            """
-            INSERT INTO members(
-                user_id,username,full_name,chat_id,course_id,course_name,
-                invite_link,link_type,creator_id,creator_name,joined_at,
-                expires_at,status
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                u.id,
-                getattr(u, "username", None),
-                user_name(u),
-                str(cm.chat.id),
-                link["course_id"],
-                link["course_name"],
-                invite_url,
-                link["link_type"],
-                link["creator_id"],
-                link["creator_name"],
-                iso(joined),
-                iso(expires),
-                "active"
-            )
+    if not row:
+        await log_activity(
+            "MEMBER_JOIN",
+            user_id=user.id,
+            user_name=user_display(user),
+            username=user.username or "",
+            channel_id=chat.id,
+            channel_title=chat.title or "",
+            details="Member joined without pending access record",
         )
-        c.execute(
-            "UPDATE links SET used=1 WHERE invite_link=?",
-            (invite_url,)
-        )
+        return
 
-    if OWNER_ID:
-        kind = "\U0001f393 DEMO" if link["link_type"] == "demo" else "\U0001f48e PERMANENT"
-        try:
-            await context.bot.send_message(
-                OWNER_ID,
-                f"{kind} <b>MEMBER JOINED</b>\n\n"
-                f"\U0001f464 Added by: <b>{esc(link['creator_name'])}</b>\n"
-                f"\U0001f4da Course: <b>{esc(link['course_name'])}</b>\n"
-                f"\U0001f464 Member: <b>{esc(user_name(u))}</b>\n"
-                f"\U0001f194 ID: <code>{u.id}</code>\n"
-                f"\U0001f550 Joined: <b>{local_time(iso(joined))}</b>",
-                parse_mode=ParseMode.HTML
-            )
-        except Exception:
-            pass
+    await db_execute(
+        "UPDATE members SET status='ACTIVE', joined_at=? WHERE id=?",
+        (iso_now(), row["id"]),
+    )
+
+    await log_activity(
+        "MEMBER_JOIN",
+        user_id=user.id,
+        user_name=user_display(user),
+        username=user.username or "",
+        admin_id=row["added_by"],
+        admin_name=row["added_by_name"],
+        course=row["course"],
+        channel_id=chat.id,
+        channel_title=chat.title or "",
+        access_type=row["access_type"],
+        details="Member joined channel",
+    )
 
 
-async def demo_job(context: ContextTypes.DEFAULT_TYPE):
-    current = now()
+# =========================
+# REPORTS
+# =========================
 
-    with db() as c:
-        rows = c.execute(
-            """
-            SELECT * FROM members
-            WHERE link_type='demo'
-              AND status='active'
-              AND expires_at IS NOT NULL
-              AND expires_at <= ?
-            """,
-            (iso(current),)
-        ).fetchall()
+async def make_report(hours):
+    end = now_local()
+    start = end - timedelta(hours=hours)
 
+    rows = await db_execute(
+        """
+        SELECT * FROM activity
+        WHERE created_at >= ? AND created_at <= ?
+        ORDER BY id ASC
+        """,
+        (
+            start.isoformat(timespec="seconds"),
+            end.isoformat(timespec="seconds"),
+        ),
+        fetch=True,
+    )
+
+    label = "LAST 1 HOUR" if hours == 1 else "LAST 24 HOURS"
+
+    lines = [
+        f"ð <b>REPORT CENTER</b>",
+        f"ð <b>{label}</b>",
+        f"ð {start.strftime('%d/%m/%Y %H:%M:%S')} â {end.strftime('%d/%m/%Y %H:%M:%S')} IST",
+        "",
+    ]
+
+    if not rows:
+        lines.append("â¹ï¸ Is period me koi activity record nahi hai.")
+        return "\n".join(lines)
+
+    # Aggregate cleanly without repeating the header for every row.
+    counts = {}
     for r in rows:
-        try:
-            await context.bot.ban_chat_member(
-                chat_id=int(r["chat_id"]),
-                user_id=int(r["user_id"])
+        counts[r["event_type"]] = counts.get(r["event_type"], 0) + 1
+
+    lines.append("ð <b>SUMMARY</b>")
+    for event, count in counts.items():
+        lines.append(f"â¢ {escape(event.replace('_', ' ').title())}: <b>{count}</b>")
+
+    lines.append("")
+    lines.append("ð¥ <b>ACTIVITY DETAILS</b>")
+    lines.append("ââââââââââââââââââââ")
+
+    for i, r in enumerate(rows, 1):
+        event = r["event_type"].replace("_", " ").title()
+
+        lines.append(f"<b>#{i} â¢ {escape(event)}</b>")
+
+        if r["user_id"]:
+            lines.append(
+                f"ð¤ Member: <b>{escape(r['user_name'] or str(r['user_id']))}</b>"
             )
-            try:
-                await context.bot.unban_chat_member(
-                    chat_id=int(r["chat_id"]),
-                    user_id=int(r["user_id"]),
-                    only_if_banned=True
-                )
-            except Exception:
-                pass
+            lines.append(f"ð ID: <code>{r['user_id']}</code>")
 
-            with db() as c:
-                c.execute(
-                    """
-                    UPDATE members
-                    SET status='removed', removed_at=?
-                    WHERE id=?
-                    """,
-                    (iso(current), r["id"])
-                )
-        except Exception as e:
-            log.error("demo remove: %s", e)
-
-
-# ============================================================
-# REPORT ENGINE
-# ============================================================
-def member_line(r, n):
-    kind = "\U0001f393 DEMO" if r["link_type"] == "demo" else "\U0001f48e PERMANENT"
-    status = {
-        "active": "\U0001f7e2 Active",
-        "removed": "\U0001f6ab Removed",
-    }.get(r["status"], esc(r["status"]))
-
-    username = f"@{esc(r['username'])}" if r["username"] else "No username"
-
-    return (
-        f"<b>#{n} {kind}</b>\n"
-        f"\U0001f464 Member: <b>{esc(r['full_name'])}</b>\n"
-        f"\U0001f517 Username: <b>{username}</b>\n"
-        f"\U0001f194 ID: <code>{r['user_id']}</code>\n"
-        f"\U0001f464 Added by: <b>{esc(r['creator_name'])}</b>\n"
-        f"\U0001f4da Course: <b>{esc(r['course_name'])}</b>\n"
-        f"\U0001f550 Joined: <b>{local_time(r['joined_at'])}</b>\n"
-        f"\U0001f4cc Status: <b>{status}</b>\n"
-    )
-
-
-def build_report(start_utc, end_utc, title, report_key):
-    start_iso = iso(start_utc)
-    end_iso = iso(end_utc)
-
-    with db() as c:
-        links = c.execute(
-            """
-            SELECT * FROM links
-            WHERE created_at >= ? AND created_at < ?
-            ORDER BY created_at
-            """,
-            (start_iso, end_iso)
-        ).fetchall()
-
-        members = c.execute(
-            """
-            SELECT * FROM members
-            WHERE joined_at >= ? AND joined_at < ?
-            ORDER BY joined_at
-            """,
-            (start_iso, end_iso)
-        ).fetchall()
-
-    demo_members = [r for r in members if r["link_type"] == "demo"]
-    perm_members = [r for r in members if r["link_type"] == "perm"]
-    demo_links = [r for r in links if r["link_type"] == "demo"]
-    perm_links = [r for r in links if r["link_type"] == "perm"]
-
-    # IMPORTANT: Header is created EXACTLY ONCE.
-    text = (
-        f"\U0001f4ca <b>{title}</b>\n"
-        f"\U0001f4c5 <b>{start_utc.astimezone(IST).strftime('%d/%m/%Y %H:%M:%S')}</b>"
-        " \u2192 "
-        f"<b>{end_utc.astimezone(IST).strftime('%d/%m/%Y %H:%M:%S')} IST</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-        "\U0001f517 <b>LINK ACTIVITY</b>\n"
-        f"\U0001f393 Demo links created: <b>{len(demo_links)}</b>\n"
-        f"\U0001f48e Permanent links created: <b>{len(perm_links)}</b>\n"
-        f"\U0001f517 Total links: <b>{len(links)}</b>\n\n"
-    )
-
-    if links:
-        text += "\U0001f4cb <b>GENERATED LINKS</b>\n\n"
-        for i, r in enumerate(links, 1):
-            kind = "\U0001f393 DEMO" if r["link_type"] == "demo" else "\U0001f48e PERMANENT"
-            used = "\u2705 Used" if r["used"] else "\u26aa Unused"
-            text += (
-                f"#{i} {kind}\n"
-                f"\U0001f464 Seller/Admin: <b>{esc(r['creator_name'])}</b>\n"
-                f"\U0001f4da Course: <b>{esc(r['course_name'])}</b>\n"
-                f"\U0001f550 Created: <b>{local_time(r['created_at'])}</b>\n"
-                f"\U0001f4cc Status: <b>{used}</b>\n\n"
+        if r["admin_id"]:
+            lines.append(
+                f"ð§âð¼ Added by: <b>{escape(r['admin_name'] or str(r['admin_id']))}</b>"
             )
-    else:
-        text += "\U0001f4cb <b>GENERATED LINKS</b>\n\u274c None\n\n"
 
-    text += (
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-        "\U0001f465 <b>MEMBER JOIN ACTIVITY</b>\n"
-        f"\U0001f4ca Total members: <b>{len(members)}</b>\n"
-        f"\U0001f393 Demo: <b>{len(demo_members)}</b>\n"
-        f"\U0001f48e Permanent: <b>{len(perm_members)}</b>\n\n"
-    )
+        if r["course"]:
+            lines.append(f"ð Course: <b>{escape(r['course'])}</b>")
 
-    if members:
-        for i, r in enumerate(members, 1):
-            text += member_line(r, i) + "\n"
-    else:
-        text += "\u274c No members joined in this period.\n"
+        if r["access_type"]:
+            lines.append(f"ðï¸ Type: <b>{escape(r['access_type'])}</b>")
 
-    text += (
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
-        f"\U0001f4ca <b>SUMMARY</b>\n"
-        f"\U0001f393 Demo members: <b>{len(demo_members)}</b>\n"
-        f"\U0001f48e Permanent members: <b>{len(perm_members)}</b>\n"
-        f"\U0001f465 Total: <b>{len(members)}</b>"
-    )
+        if r["channel_title"]:
+            lines.append(f"ð¡ Channel: <b>{escape(r['channel_title'])}</b>")
+
+        lines.append(f"ð Time: <b>{escape(fmt_dt(r['created_at']))} IST</b>")
+
+        if r["details"]:
+            lines.append(f"â¹ï¸ {escape(r['details'])}")
+
+        lines.append("")
+
+    text = "\n".join(lines)
+
+    # Telegram message limit protection.
+    if len(text) > 3800:
+        text = text[:3750] + "\n\nâ¦ <i>Report truncated due to Telegram message limit.</i>"
+
     return text
 
 
-def split_report(text, limit=3900):
-    """
-    Split WITHOUT repeating the report header.
-    Only the first chunk contains the header; following chunks say CONTINUED.
-    """
-    if len(text) <= limit:
-        return [text]
-
-    lines = text.splitlines(keepends=True)
-    chunks = []
-    current = ""
-
-    for line in lines:
-        if current and len(current) + len(line) > limit:
-            chunks.append(current)
-            current = ""
-        current += line
-
-    if current:
-        chunks.append(current)
-
-    if len(chunks) > 1:
-        for i in range(1, len(chunks)):
-            prefix = "\U0001f4ca <b>REPORT CONTINUED</b>\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
-            chunks[i] = prefix + chunks[i]
-
-    return chunks
-
-
-async def send_report_once(bot, report_key, text):
-    """
-    Send report exactly once per key.
-    DB UNIQUE(report_key) prevents duplicate sends caused by repeated
-    callbacks or multiple workers.
-    """
-    with db() as c:
-        exists = c.execute(
-            "SELECT 1 FROM reports_sent WHERE report_key=?",
-            (report_key,)
-        ).fetchone()
-        if exists:
-            return False
-
-        # Reserve BEFORE sending. This prevents concurrent callbacks.
-        c.execute(
-            "INSERT INTO reports_sent(report_key,message_id,sent_at) VALUES(?,?,?)",
-            (report_key, 0, iso(now()))
-        )
-        c.commit()
-
-    chunks = split_report(text)
-    first_id = None
-
-    try:
-        for chunk in chunks:
-            msg = await bot.send_message(
-                OWNER_ID,
-                chunk,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True
-            )
-            if first_id is None:
-                first_id = msg.message_id
-            with db() as c:
-                c.execute(
-                    """
-                    INSERT INTO report_messages(report_key,message_id,created_at)
-                    VALUES(?,?,?)
-                    """,
-                    (report_key, msg.message_id, iso(now()))
-                )
-                c.commit()
-
-        with db() as c:
-            c.execute(
-                "UPDATE reports_sent SET message_id=? WHERE report_key=?",
-                (first_id or 0, report_key)
-            )
-            c.commit()
-        return True
-
-    except Exception:
-        # Allow retry if Telegram send failed.
-        with db() as c:
-            c.execute(
-                "DELETE FROM reports_sent WHERE report_key=?",
-                (report_key,)
-            )
-            c.commit()
-        raise
-
-
-def one_hour_range():
-    end = now()
-    start = end - timedelta(hours=1)
-    return start, end
-
-
-def yesterday_range():
-    today = ist_now().date()
-    y = today - timedelta(days=1)
-    start_local = datetime(y.year, y.month, y.day, 0, 0, 0, tzinfo=IST)
-    end_local = start_local + timedelta(days=1)
-    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc), y.isoformat()
-
-
-async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def daily_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-
-    if not owner(q.from_user.id):
-        await q.answer("\u274c OWNER ONLY", show_alert=True)
-        return
-
     await q.answer()
+
+    if not await is_admin(q.from_user.id):
+        await q.answer("â Access denied.", show_alert=True)
+        return
 
     text = (
-        "\U0001f4ca <b>REPORT CENTER</b>\n\n"
-        "\U0001f550 <b>LAST 1 HOUR</b>\n"
-        "<i>Pichhle 60 minutes ki complete activity.</i>\n\n"
-        "\U0001f4c5 <b>LAST 24 HOURS</b>\n"
-        "<i>Kal ke complete day ki detailed activity.</i>\n\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-        "\U0001f464 <b>Member</b> \u2022 \U0001f468\u200d\U0001f4bc <b>Seller</b> \u2022 "
-        "\U0001f4da <b>Course</b> \u2022 \U0001f393 <b>Access</b> \u2022 \U0001f552 <b>Exact Time</b>"
+        "ð <b>REPORT CENTER</b>\n\n"
+        "ð <b>LAST 1 HOUR</b>\n"
+        "<i>Last 60 minutes ki complete activity.</i>\n\n"
+        "ð <b>LAST 24 HOURS</b>\n"
+        "<i>Last 24 hours ki detailed activity.</i>\n\n"
+        "Neeche jis report ko dekhna hai us par click karo."
     )
 
-    kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("\U0001f550 LAST 1 HOUR", callback_data="rpt:hour"),
-            InlineKeyboardButton("\U0001f4c5 LAST 24 HOURS", callback_data="rpt:day"),
-        ],
-        [
-            InlineKeyboardButton("\u2699\ufe0f OWNER PANEL", callback_data="owner")
-        ]
-    ])
-
-    await safe_edit(q, text, kb)
-
-
-async def hourly_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if not owner(q.from_user.id):
-        await q.answer("\u274c OWNER ONLY", show_alert=True)
-        return
-
-    start, end = one_hour_range()
-    end_key = end.astimezone(IST).strftime("%Y%m%d%H%M")
-    key = f"hour:{end_key}"
-
-    # Reserve first. If this exact report was already generated, do not
-    # edit/send anything again.
-    with db() as c:
-        exists = c.execute(
-            "SELECT 1 FROM reports_sent WHERE report_key=?",
-            (key,)
-        ).fetchone()
-        if exists:
-            await q.answer("\u2139\ufe0f Is 1-hour report ko already generate kiya ja chuka hai.", show_alert=True)
-            return
-        c.execute(
-            "INSERT INTO reports_sent(report_key,message_id,sent_at) VALUES(?,?,?)",
-            (key, q.message.message_id, iso(now()))
-        )
-        c.commit()
-
-    await q.answer("Generating 1-hour report\u2026")
-
-    try:
-        text = build_report(
-            start, end,
-            "\U0001f4ca \U0001f550 LAST 1 HOUR REPORT",
-            key
-        )
-        chunks = split_report(text)
-
-        await safe_edit(q, chunks[0])
-
-        with db() as c:
-            c.execute(
-                "INSERT INTO report_messages(report_key,message_id,created_at) VALUES(?,?,?)",
-                (key, q.message.message_id, iso(now()))
-            )
-            c.commit()
-
-        for chunk in chunks[1:]:
-            msg = await context.bot.send_message(
-                OWNER_ID,
-                chunk,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True
-            )
-            with db() as c:
-                c.execute(
-                    "INSERT INTO report_messages(report_key,message_id,created_at) VALUES(?,?,?)",
-                    (key, msg.message_id, iso(now()))
-                )
-                c.commit()
-
-    except Exception:
-        log.exception("hourly report")
-        with db() as c:
-            c.execute("DELETE FROM reports_sent WHERE report_key=?", (key,))
-            c.commit()
-        raise
-
-
-async def daily_report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if not owner(q.from_user.id):
-        await q.answer("\u274c OWNER ONLY", show_alert=True)
-        return
-
-    start, end, date_key = yesterday_range()
-    key = f"day:{date_key}"
-
-    with db() as c:
-        exists = c.execute(
-            "SELECT 1 FROM reports_sent WHERE report_key=?",
-            (key,)
-        ).fetchone()
-        if exists:
-            await q.answer("\u2139\ufe0f Is 24-hour report ko already generate kiya ja chuka hai.", show_alert=True)
-            return
-        c.execute(
-            "INSERT INTO reports_sent(report_key,message_id,sent_at) VALUES(?,?,?)",
-            (key, q.message.message_id, iso(now()))
-        )
-        c.commit()
-
-    await q.answer("Generating 24-hour report\u2026")
-
-    try:
-        text = build_report(
-            start, end,
-            "\U0001f4ca \U0001f4c5 24 HOURS / DAILY REPORT",
-            key
-        )
-        chunks = split_report(text)
-
-        await safe_edit(q, chunks[0])
-
-        with db() as c:
-            c.execute(
-                "INSERT INTO report_messages(report_key,message_id,created_at) VALUES(?,?,?)",
-                (key, q.message.message_id, iso(now()))
-            )
-            c.commit()
-
-        for chunk in chunks[1:]:
-            msg = await context.bot.send_message(
-                OWNER_ID,
-                chunk,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True
-            )
-            with db() as c:
-                c.execute(
-                    "INSERT INTO report_messages(report_key,message_id,created_at) VALUES(?,?,?)",
-                    (key, msg.message_id, iso(now()))
-                )
-                c.commit()
-
-    except Exception:
-        log.exception("daily report")
-        with db() as c:
-            c.execute("DELETE FROM reports_sent WHERE report_key=?", (key,))
-            c.commit()
-        raise
-
-
-async def automatic_daily_report(context: ContextTypes.DEFAULT_TYPE):
-    if not OWNER_ID:
-        return
-
-    local = ist_now()
-    if local.hour != 0 or local.minute < 5:
-        return
-
-    start, end, date_key = yesterday_range()
-    key = f"auto-day:{date_key}"
-
-    text = build_report(
-        start,
-        end,
-        "\U0001f4ca \U0001f4c5 AUTOMATIC DAILY REPORT",
-        key
-    )
-
-    try:
-        await send_report_once(context.bot, key, text)
-    except Exception:
-        log.exception("automatic daily report")
-
-
-async def clear_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not owner(update.effective_user.id):
-        return
-
-    with db() as c:
-        rows = c.execute(
-            "SELECT message_id FROM report_messages ORDER BY id"
-        ).fetchall()
-
-    deleted = 0
-    for r in rows:
-        try:
-            await context.bot.delete_message(
-                OWNER_ID,
-                int(r["message_id"])
-            )
-            deleted += 1
-        except Exception:
-            pass
-
-    with db() as c:
-        c.execute("DELETE FROM report_messages")
-        c.execute("DELETE FROM reports_sent")
-        c.commit()
-
-    await update.message.reply_text(
-        f"\u2705 Tracked report messages cleared: {deleted}\n"
-        "Report keys reset. New reports can be generated again."
-    )
-
-
-async def dailyreport_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not owner(update.effective_user.id):
-        return
-    # Command shows yesterday directly.
-    start, end, date_key = yesterday_range()
-    text = build_report(
-        start, end, "\U0001f4ca \U0001f4c5 24 HOURS / DAILY REPORT", f"manual-day:{date_key}"
-    )
-    chunks = split_report(text)
-    for chunk in chunks:
-        await update.message.reply_text(
-            chunk,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True
-        )
-
-
-async def hourly_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not owner(update.effective_user.id):
-        return
-    start, end = one_hour_range()
-    text = build_report(
-        start, end, "\U0001f4ca \u23f1 LAST 1 HOUR REPORT", "manual-hour"
-    )
-    for chunk in split_report(text):
-        await update.message.reply_text(
-            chunk,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True
-        )
-
-
-# ============================================================
-# OWNER PANEL / ADMIN
-# ============================================================
-async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-
-    if not owner(q.from_user.id):
-        await q.answer("\u274c OWNER ONLY", show_alert=True)
-        return
-
-    await q.answer()
-
-    with db() as c:
-        admins = c.execute("SELECT * FROM admins").fetchall()
-        channels = c.execute("SELECT * FROM channels").fetchall()
-        courses = c.execute("SELECT * FROM courses").fetchall()
-
-    text = (
-        "\U0001f451 <b>OWNER CONTROL PANEL</b>\n\n"
-        "\U0001f4ca <b>Dashboard</b>\n"
-        f"\U0001f465 Active Admins: <b>{len(admins)}</b>\n"
-        f"\U0001f4da Courses: <b>{len(courses)}</b>\n"
-        f"\U0001f4e1 Detected Channels: <b>{len(channels)}</b>\n"
-        f"\u23f1\ufe0f Demo Duration: <b>{demo_minutes()} Minutes</b>\n\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-        "\u2728 <i>Seller \u2022 Access \u2022 Channel \u2022 Report Management</i>"
-    )
-
-    kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("\U0001f465 VIEW ADMINS", callback_data="editadmins"),
-            InlineKeyboardButton("\u2795 ADD ADMIN", callback_data="addadmin"),
-        ],
-        [
-            InlineKeyboardButton("\u23f1\ufe0f DEMO TIME", callback_data="showtime"),
-            InlineKeyboardButton("\U0001f4ca DAILY REPORT", callback_data="reports"),
-        ],
-        [
-            InlineKeyboardButton("\u21a9\ufe0f BACK TO HOME", callback_data="home"),
-        ],
-    ])
-
-    await safe_edit(q, text, kb)
-
-
-async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if not owner(q.from_user.id):
-        await q.answer("\u274c Owner only", show_alert=True)
-        return ConversationHandler.END
-    await q.answer()
-
-    await safe_edit(
-        q,
-        "\u2795 <b>ADD ADMIN</b>\n\n"
-        "User ID bhejo:\n<code>123456789</code>",
-        InlineKeyboardMarkup([
-            [InlineKeyboardButton("\u274c Cancel", callback_data="owner")]
-        ])
-    )
-    return ADD_ADMIN
-
-
-async def add_admin_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not owner(update.effective_user.id):
-        return ConversationHandler.END
-
-    try:
-        uid = int(update.message.text.strip())
-    except Exception:
-        await update.message.reply_text("\u274c Numeric Telegram User ID do.")
-        return ADD_ADMIN
-
-    if uid == OWNER_ID:
-        await update.message.reply_text("\u274c Owner already exists.")
-        return ConversationHandler.END
-
-    with db() as c:
-        c.execute(
-            "INSERT OR REPLACE INTO admins(uid,name,permissions) VALUES(?,?,?)",
-            (uid, f"Admin {uid}", "demo")
-        )
-
-    await update.message.reply_text(
-        f"\u2705 Admin added: <code>{uid}</code>",
+    await q.edit_message_text(
+        text,
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "\U0001f393 Demo Only", callback_data=f"access:demo:{uid}"
-                ),
-                InlineKeyboardButton(
-                    "\U0001f393+\U0001f48e Both", callback_data=f"access:both:{uid}"
-                )
-            ]
-        ])
-    )
-    return ConversationHandler.END
-
-
-async def set_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if not owner(q.from_user.id):
-        await q.answer("\u274c Owner only", show_alert=True)
-        return
-    await q.answer()
-
-    _, access, uid_s = q.data.split(":")
-    uid = int(uid_s)
-    permissions = "demo" if access == "demo" else "demo,perm"
-
-    with db() as c:
-        c.execute(
-            "UPDATE admins SET permissions=? WHERE uid=?",
-            (permissions, uid)
-        )
-
-    await safe_edit(
-        q,
-        f"\u2705 <b>ADMIN ACCESS UPDATED</b>\n\n"
-        f"\U0001f194 <code>{uid}</code>\n"
-        f"\U0001f510 <b>{'Demo Only' if access == 'demo' else 'Demo + Permanent'}</b>",
-        InlineKeyboardMarkup([
-            [InlineKeyboardButton("\u2b05\ufe0f Owner Panel", callback_data="owner")]
-        ])
+        reply_markup=report_keyboard(),
     )
 
 
-async def edit_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    if not owner(q.from_user.id):
-        await q.answer("\u274c Owner only", show_alert=True)
-        return
     await q.answer()
 
-    with db() as c:
-        rows = c.execute(
-            "SELECT uid,name,permissions FROM admins ORDER BY uid"
-        ).fetchall()
-
-    kb = []
-    for r in rows:
-        if r["uid"] == OWNER_ID:
-            continue
-        kb.append([
-            InlineKeyboardButton(
-                f"{r['uid']} \u2014 {r['permissions']}",
-                callback_data=f"chooseaccess:{r['uid']}"
-            )
-        ])
-    kb.append([InlineKeyboardButton("\u2b05\ufe0f Owner", callback_data="owner")])
-    await safe_edit(q, "\U0001f465 <b>ADMINS</b>", InlineKeyboardMarkup(kb))
-
-
-async def choose_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if not owner(q.from_user.id):
-        await q.answer("\u274c Owner only", show_alert=True)
+    if not await is_admin(q.from_user.id):
+        await q.answer("â Access denied.", show_alert=True)
         return
-    await q.answer()
-    uid = int(q.data.split(":")[1])
 
-    await safe_edit(
-        q,
-        f"\U0001f194 Admin: <code>{uid}</code>\n\nSelect admin access:",
-        InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "\U0001f393 Demo Only", callback_data=f"access:demo:{uid}"
-                ),
-                InlineKeyboardButton(
-                    "\U0001f393+\U0001f48e Both", callback_data=f"access:both:{uid}"
-                )
-            ],
-            [InlineKeyboardButton("\u2b05\ufe0f Back", callback_data="editadmins")]
-        ])
-    )
-
-
-async def show_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if not owner(q.from_user.id):
-        await q.answer("\u274c Owner only", show_alert=True)
-        return
-    await q.answer()
-
-    await safe_edit(
-        q,
-        f"\u23f1 <b>Demo Time: {demo_minutes()} minutes</b>\n\n"
-        "Command:\n<code>/demotime 5</code>",
-        InlineKeyboardMarkup([
-            [InlineKeyboardButton("\u2b05\ufe0f Owner Panel", callback_data="owner")]
-        ])
-    )
-
-
-async def demotime(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not owner(update.effective_user.id):
-        return
-    if not context.args:
-        await update.message.reply_text(
-            f"Current Demo Time: {demo_minutes()} minutes"
-        )
-        return
-    try:
-        n = int(context.args[0])
-        if n < 1 or n > 1440:
-            raise ValueError
-        with db() as c:
-            c.execute(
-                "INSERT OR REPLACE INTO settings(key,value) VALUES('demo_minutes',?)",
-                (str(n),)
-            )
-        await update.message.reply_text(f"\u2705 Demo time = {n} minutes.")
-    except Exception:
-        await update.message.reply_text("\u274c 1\u20131440 minutes ke beech number do.")
-
-
-# ============================================================
-# CATEGORY / COURSE CREATION (OWNER)
-# ============================================================
-async def add_category_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if not owner(q.from_user.id):
-        await q.answer("\u274c Owner only", show_alert=True)
-        return ConversationHandler.END
-    await q.answer()
-
-    await safe_edit(
-        q,
-        "\u2795 <b>NEW CATEGORY</b>\n\n"
-        "Format:\n<code>\U0001f4da | Category Name</code>",
-        InlineKeyboardMarkup([
-            [InlineKeyboardButton("\u274c Cancel", callback_data="owner")]
-        ])
-    )
-    return ADD_CATEGORY
-
-
-async def add_category_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not owner(update.effective_user.id):
-        return ConversationHandler.END
-
-    p = [x.strip() for x in update.message.text.split("|", 1)]
-    if len(p) != 2:
-        await update.message.reply_text("\u274c Format: \U0001f4da | Category Name")
-        return ADD_CATEGORY
+    hours = 1 if q.data == "report_1h" else 24
 
     try:
-        with db() as c:
-            c.execute(
-                "INSERT INTO categories(emoji,name) VALUES(?,?)",
-                (p[0], p[1])
-            )
-        await update.message.reply_text("\u2705 Category added.")
-        return ConversationHandler.END
-    except sqlite3.IntegrityError:
-        await update.message.reply_text("\u274c Category already exists.")
-        return ADD_CATEGORY
-
-
-# ============================================================
-# CHANNEL CHECK
-# ============================================================
-async def checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not owner(update.effective_user.id):
-        return
-
-    if not context.args:
-        await update.message.reply_text(
-            "Use: /checkchannel -1001234567890"
-        )
-        return
-
-    try:
-        chat_id = int(context.args[0])
-        me = await context.bot.get_me()
-        member = await context.bot.get_chat_member(chat_id, me.id)
-        chat = await context.bot.get_chat(chat_id)
-
-        await update.message.reply_text(
-            "\U0001f50e <b>CHANNEL CHECK</b>\n\n"
-            f"\U0001f4da <b>{esc(chat.title)}</b>\n"
-            f"\U0001f194 <code>{chat_id}</code>\n"
-            f"\U0001f916 Status: <b>{esc(member.status)}</b>\n"
-            f"\U0001f517 Invite/Add Subscribers: <b>{getattr(member,'can_invite_users',None)}</b>\n"
-            f"\U0001f6ab Ban Users: <b>{getattr(member,'can_restrict_members',None)}</b>\n\n"
-            "Permanent: Invite permission ON.\n"
-            "Demo: Invite + Ban Users ON.",
-            parse_mode=ParseMode.HTML
+        text = await make_report(hours)
+        await q.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=report_keyboard(),
+            disable_web_page_preview=True,
         )
     except Exception as e:
-        await update.message.reply_text(
-            f"\u274c Check failed:\n{e}"
+        logger.exception("Report error")
+        await q.edit_message_text(
+            "â <b>Report Error</b>\n\n"
+            f"<code>{escape(str(e))}</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_keyboard(),
         )
 
 
-# ============================================================
-# INLINE SEARCH
-# ============================================================
-async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = (update.inline_query.query or "").strip().lower()
+# =========================
+# INLINE COURSE SEARCH
+# =========================
 
-    with db() as c:
-        rows = c.execute(
-            """
-            SELECT courses.id,courses.name,categories.emoji,categories.name AS cat
-            FROM courses
-            JOIN categories ON categories.id=courses.category_id
-            WHERE lower(courses.name) LIKE ?
-            ORDER BY courses.name
-            LIMIT 50
-            """,
-            (f"%{query}%",)
-        ).fetchall()
+async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.inline_query
+    if not query:
+        return
+
+    search = (query.query or "").strip()
+
+    rows = await db_execute(
+        "SELECT * FROM channels ORDER BY title COLLATE NOCASE",
+        fetch=True,
+    )
+
+    if search:
+        terms = search.lower().split()
+        filtered = []
+        for r in rows:
+            hay = f"{r['title']} {r['username']} {r['chat_id']}".lower()
+            if all(t in hay for t in terms):
+                filtered.append(r)
+        rows = filtered
+
+    from telegram import InlineQueryResultArticle, InputTextMessageContent
 
     results = []
-    for r in rows:
+    for r in rows[:30]:
+        description = (
+            f"Channel: {r['title']}\n"
+            f"ID: {r['chat_id']}\n"
+            "Auto-detected channel"
+        )
+
+        content = InputTextMessageContent(
+            (
+                f"ð¡ <b>{escape(r['title'])}</b>\n\n"
+                f"ð <code>{r['chat_id']}</code>\n"
+                "â Channel detected successfully."
+            ),
+            parse_mode=ParseMode.HTML,
+        )
+
         results.append(
             InlineQueryResultArticle(
-                id=f"course_{r['id']}",
-                title=f"{r['emoji']} {r['name']}",
-                description=f"{r['cat']} \u2022 Course",
-                input_message_content=InputTextMessageContent(
-                    f"{r['emoji']} <b>{esc(r['name'])}</b>\n\n"
-                    "Course selected.",
-                    parse_mode=ParseMode.HTML
-                ),
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(
-                        "\U0001f4da Open Course",
-                        callback_data=f"course:{r['id']}"
-                    )]
-                ])
+                id=f"channel_{r['chat_id']}",
+                title=f"ð {r['title']}",
+                description=description,
+                input_message_content=content,
             )
         )
 
-    await update.inline_query.answer(
-        results,
+    await query.answer(
+        results=results,
         cache_time=0,
-        is_personal=True
+        is_personal=True,
     )
 
 
-# ============================================================
+# =========================
 # CALLBACK ROUTER
-# ============================================================
-async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    d = q.data or ""
+# =========================
 
-    if q.id and not claim_event(f"callback:{q.id}", ttl=600):
+async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return
+
+    data = q.data or ""
+
+    if data == "home":
+        if not await is_admin(q.from_user.id):
+            await q.answer("â Access denied.", show_alert=True)
+            return
+
         await q.answer()
+        await q.edit_message_text(
+            (
+                "ð¸ <b>HELLO SELLER FAMILY, KESE HO?</b>\n\n"
+                "â¨ <b>I AM WIZARD</b> ð¸ ð\n\n"
+                "ð <b>COURSE SEARCH</b>\n"
+                "Telegram ke kisi bhi chat me likho:\n"
+                "<code>@YourBotUsername course-name</code>\n\n"
+                "ð¡ <b>CHANNEL AUTO-DETECT</b>\n"
+                "Bot ko channel me administrator banao â channel automatically detect hoga."
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=home_keyboard(),
+        )
+        return
+
+    if data == "owner_panel":
+        await owner_panel(update, context)
+    elif data == "admins":
+        await admins_view(update, context)
+    elif data == "demo_time":
+        await demo_time_view(update, context)
+    elif data == "channels":
+        await channels_view(update, context)
+    elif data == "daily_report":
+        await daily_report_menu(update, context)
+    elif data in ("report_1h", "report_24h"):
+        await report_button(update, context)
+    else:
+        await q.answer("Unknown button.", show_alert=True)
+
+
+# =========================
+# ACCESS COMMANDS
+# =========================
+
+async def give_access_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Commands:
+      /demo USER_ID CHANNEL_ID
+      /permanent USER_ID CHANNEL_ID
+    """
+    if not await is_admin(update.effective_user.id):
+        await update.message.reply_text("â Access denied.")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage:\n"
+            "<code>/demo USER_ID CHANNEL_ID</code>\n"
+            "<code>/permanent USER_ID CHANNEL_ID</code>",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     try:
-        if d == "home":
-            await start(update, context)
-        elif d == "owner":
-            await owner_panel(update, context)
-        elif d == "reports":
-            await report_menu(update, context)
-        elif d == "rpt:hour":
-            await hourly_report(update, context)
-        elif d == "rpt:day":
-            await daily_report_button(update, context)
-        elif d.startswith("cat:"):
-            await category(update, context)
-        elif d.startswith("course:"):
-            await course(update, context)
-        elif d.startswith("link:"):
-            await create_link(update, context)
-        elif d == "channels":
-            await channels_page(update, context)
-        elif d.startswith("detected:"):
-            await detected_channel(update, context)
-        elif d == "editadmins":
-            await edit_admins(update, context)
-        elif d.startswith("chooseaccess:"):
-            await choose_access(update, context)
-        elif d.startswith("access:"):
-            await set_access(update, context)
-        elif d == "showtime":
-            await show_time(update, context)
-        elif d == "addcat":
-            await add_category_start(update, context)
-        else:
-            await q.answer()
-    except Exception:
-        log.exception("callback error: %s", d)
-        try:
-            await q.answer("\u274c Temporary error. Bot logs check karo.", show_alert=True)
-        except Exception:
-            pass
+        user_id = int(context.args[0])
+        channel_id = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("â USER_ID and CHANNEL_ID must be numbers.")
+        return
+
+    try:
+        member_user = await context.bot.get_chat(user_id)
+    except TelegramError:
+        await update.message.reply_text(
+            "â User not found. User must have started the bot before access is generated."
+        )
+        return
+
+    access_type = "DEMO" if update.message.text.startswith("/demo") else "PERMANENT"
+
+    msg, error = await grant_access(
+        context,
+        admin_id=update.effective_user.id,
+        member_user=member_user,
+        channel_id=channel_id,
+        access_type=access_type,
+    )
+
+    if error:
+        await update.message.reply_text(f"â {escape(error)}", parse_mode=ParseMode.HTML)
+        return
+
+    await update.message.reply_text(
+        msg,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=False,
+    )
 
 
-# ============================================================
+# =========================
+# ERROR HANDLER
+# =========================
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.exception("Unhandled exception", exc_info=context.error)
+
+
+# =========================
 # MAIN
-# ============================================================
+# =========================
+
+async def post_init(application: Application):
+    await db_init()
+    logger.info("Database initialized: %s", DB_FILE)
+
+
 def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN missing.")
-    if not OWNER_ID:
-        raise RuntimeError("OWNER_ID missing.")
-
-    acquire_single_instance_lock()
-    log.info(
-        "Single-instance lock acquired | pid=%s | host=%s",
-        os.getpid(),
-        socket.gethostname()
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
     )
 
-    app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).build()
+    # Commands
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("addadmin", add_admin))
+    application.add_handler(CommandHandler("deladmin", del_admin))
+    application.add_handler(CommandHandler("demo", give_access_command))
+    application.add_handler(CommandHandler("permanent", give_access_command))
 
-    app.add_handler(
-        ConversationHandler(
-            entry_points=[
-                CallbackQueryHandler(add_admin_start, pattern=r"^addadmin$")
-            ],
-            states={
-                ADD_ADMIN: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin_save)
-                ]
-            },
-            fallbacks=[]
-        )
-    )
+    # Inline search
+    application.add_handler(InlineQueryHandler(inline_search))
 
-    app.add_handler(
-        ConversationHandler(
-            entry_points=[
-                CallbackQueryHandler(add_category_start, pattern=r"^addcat$")
-            ],
-            states={
-                ADD_CATEGORY: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, add_category_save)
-                ]
-            },
-            fallbacks=[]
-        )
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("demotime", demotime))
-    app.add_handler(CommandHandler("checkchannel", checkchannel))
-    app.add_handler(CommandHandler("dailyreport", dailyreport_command))
-    app.add_handler(CommandHandler("hourlyreport", hourly_command))
-    app.add_handler(CommandHandler("clearreports", clear_reports))
-    app.add_handler(InlineQueryHandler(inline_search))
-    # Explicit owner/report handlers come BEFORE the generic callback router.
-    # This makes the two owner home buttons reliable and avoids accidental
-    # handling by another callback branch.
-    app.add_handler(CallbackQueryHandler(owner_panel, pattern=r"^owner$"))
-    app.add_handler(CallbackQueryHandler(report_menu, pattern=r"^reports$"))
-    app.add_handler(CallbackQueryHandler(hourly_report, pattern=r"^rpt:hour$"))
-    app.add_handler(CallbackQueryHandler(daily_report_button, pattern=r"^rpt:day$"))
-
-    # Bot promotion/admin detection.
-    app.add_handler(
+    # Channel auto-detection
+    application.add_handler(
         ChatMemberHandler(
-            bot_chat_member_update,
-            ChatMemberHandler.MY_CHAT_MEMBER
+            my_chat_member_handler,
+            ChatMemberHandler.MY_CHAT_MEMBER,
         )
     )
 
-    # Real member joins through our invite links.
-    app.add_handler(
+    # Member join tracking
+    application.add_handler(
         ChatMemberHandler(
-            chat_member_update,
-            ChatMemberHandler.CHAT_MEMBER
+            member_update_handler,
+            ChatMemberHandler.CHAT_MEMBER,
         )
     )
 
-    app.add_handler(CallbackQueryHandler(callbacks))
-
-    app.job_queue.run_repeating(
-        demo_job,
-        interval=15,
-        first=10
+    # All inline buttons use one router; this prevents duplicate callback handlers.
+    application.add_handler(
+        CallbackQueryHandler(callback_router)
     )
 
-    # Automatic daily report: check once every 24 hours, not every minute.
-    # This removes repeated automatic report messages.
-    app.job_queue.run_repeating(
-        automatic_daily_report,
-        interval=86400,
-        first=30
-    )
+    application.add_error_handler(error_handler)
 
-    log.info("RAJ COURSE BOT started ONCE. DB=%s | Duplicate protection=ON", DB_PATH)
-
-    app.run_polling(
+    logger.info("Bot starting...")
+    application.run_polling(
         allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
+        drop_pending_updates=True,
     )
 
 

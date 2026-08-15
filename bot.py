@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import html
 import logging
@@ -239,7 +240,7 @@ def rows_buttons(items, cols=2):
 async def safe_edit(query, text, keyboard=None):
     try:
         await query.edit_message_text(
-            text,
+            clean_ui_text(text),
             reply_markup=keyboard,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True
@@ -269,12 +270,11 @@ def local_time(value):
 # HOME / AUTO-DETECTED CHANNELS
 # ============================================================
 def home_keyboard():
+    # Home screen intentionally shows ONLY the two owner controls:
+    # Owner Panel + Daily Report. Detected channels stay hidden from Home.
     with db() as c:
         cats = c.execute(
             "SELECT id,emoji,name FROM categories ORDER BY id"
-        ).fetchall()
-        channels = c.execute(
-            "SELECT chat_id,title FROM channels ORDER BY title"
         ).fetchall()
 
     buttons = [
@@ -284,19 +284,21 @@ def home_keyboard():
         )
         for r in cats
     ]
+
     kb = rows_buttons(buttons, 2)
 
-    if channels:
+    if owner(OWNER_ID):
         kb.append([
             InlineKeyboardButton(
-                f"ð¡ Channels ({len(channels)})",
-                callback_data="channels"
+                "âï¸ OWNER PANEL",
+                callback_data="owner"
+            ),
+            InlineKeyboardButton(
+                "ð DAILY REPORT",
+                callback_data="reports"
             )
         ])
 
-    kb.append([
-        InlineKeyboardButton("âï¸ Owner Panel", callback_data="owner")
-    ])
     return InlineKeyboardMarkup(kb)
 
 
@@ -1098,7 +1100,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("â± LAST 1 HOUR", callback_data="rpt:hour"),
+            InlineKeyboardButton("â±ï¸ LAST 1 HOUR", callback_data="rpt:hour"),
             InlineKeyboardButton("ð 24 HOURS / DAILY", callback_data="rpt:day")
         ],
         [InlineKeyboardButton("â¬ï¸ Owner Panel", callback_data="owner")]
@@ -1355,27 +1357,43 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "âï¸ <b>OWNER PANEL</b>\n\n"
         f"ð¥ Admins: <b>{len(admins)}</b>\n"
-        f"ð¡ Detected Channels: <b>{len(channels)}</b>\n"
         f"ð Courses: <b>{len(courses)}</b>\n"
+        f"ð¡ Detected Channels: <b>{len(channels)}</b>\n"
         f"â± Demo Time: <b>{demo_minutes()} minutes</b>\n\n"
-        "ð¡ Bot ko channel admin banao â channel auto-detect hoga."
+        "ð¡ Channel auto-detect is active.\n"
+        "Bot ko channel me administrator banate hi channel automatically detect ho jayega."
     )
 
+    # Keep Owner Panel clean: only the controls requested by the owner.
     kb = [
         [
-            InlineKeyboardButton("ð¥ Admins", callback_data="editadmins"),
-            InlineKeyboardButton("â± Demo Time", callback_data="showtime")
+            InlineKeyboardButton(
+                "ð¥ VIEW ADMINS",
+                callback_data="editadmins"
+            ),
+            InlineKeyboardButton(
+                "â ADD ADMIN",
+                callback_data="addadmin"
+            )
         ],
         [
-            InlineKeyboardButton("ð Daily Report", callback_data="reports"),
-            InlineKeyboardButton("ð¡ Channels", callback_data="channels")
+            InlineKeyboardButton(
+                "â±ï¸ DEMO TIME",
+                callback_data="showtime"
+            ),
+            InlineKeyboardButton(
+                "ð DAILY REPORT",
+                callback_data="reports"
+            )
         ],
         [
-            InlineKeyboardButton("â Add Admin", callback_data="addadmin"),
-            InlineKeyboardButton("â Category", callback_data="addcat")
-        ],
-        [InlineKeyboardButton("â¬ï¸ Home", callback_data="home")]
+            InlineKeyboardButton(
+                "â¬ï¸ HOME",
+                callback_data="home"
+            )
+        ]
     ]
+
     await safe_edit(q, text, InlineKeyboardMarkup(kb))
 
 
@@ -1453,7 +1471,7 @@ async def set_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_edit(
         q,
-        f"â <b>Access Updated</b>\n\n"
+        f"â <b>ADMIN ACCESS UPDATED</b>\n\n"
         f"ð <code>{uid}</code>\n"
         f"ð <b>{'Demo Only' if access == 'demo' else 'Demo + Permanent'}</b>",
         InlineKeyboardMarkup([
@@ -1498,7 +1516,7 @@ async def choose_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_edit(
         q,
-        f"ð Admin: <code>{uid}</code>\n\nSelect access:",
+        f"ð Admin: <code>{uid}</code>\n\nSelect admin access:",
         InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(

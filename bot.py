@@ -407,34 +407,21 @@ async def checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ONLY OWNER PANEL + DAILY REPORT + AUTO-DETECTED CHANNELS
 # ============================================================
 def home_kb():
-    with db() as c:
-        channels = c.execute(
-            """
-            SELECT * FROM channels
-            WHERE bot_status IN ('administrator','creator')
-            ORDER BY lower(title)
-            """
-        ).fetchall()
-
-    buttons = [
-        InlineKeyboardButton(
-            f"\U0001f4da {r['title']}",
-            callback_data=f"channel:{r['chat_id']}"
-        )
-        for r in channels
-    ]
-
-    kb = rows_buttons(buttons, 2)
-
-    # NO category buttons
-    # NO Add Course button
-    # NO New Category button
-    kb.append([
-        InlineKeyboardButton("\u2699\ufe0f OWNER PANEL", callback_data="owner"),
-        InlineKeyboardButton("\U0001f4ca DAILY REPORT", callback_data="report"),
+    # Channels are intentionally HIDDEN from /start.
+    # They remain stored in SQLite and are available through Telegram
+    # inline search: @YourBotUsername course-name
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "\u2699\ufe0f OWNER PANEL",
+                callback_data="owner"
+            ),
+            InlineKeyboardButton(
+                "\U0001f4ca DAILY REPORT",
+                callback_data="report"
+            ),
+        ]
     ])
-
-    return InlineKeyboardMarkup(kb)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -451,8 +438,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Telegram ke kisi chat me likho:\n"
         "<code>@YourBotUsername course-name</code>\n\n"
         "Search result me apna course select karo.\n\n"
-        "\U0001f4e1 <b>Channel Auto Detect</b>\n"
-        "Bot ko channel me admin banao \u2192 channel automatically yahan aa jayega."
+        "\U0001f4e1 <b>Channel Search</b>\n"
+        "Bot ke inline search me course ka naam type karo aur result select karo."
     )
 
     if update.callback_query:
@@ -1321,49 +1308,86 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
 # INLINE SEARCH
 # ============================================================
 async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Telegram inline course search.
+
+    Use from ANY Telegram chat:
+        @YourBotUsername course-name
+
+    The channel list is NOT shown on /start. Search results come from
+    auto-detected channels stored in SQLite.
+    """
     query = (update.inline_query.query or "").strip().lower()
 
     with db() as c:
-        rows = c.execute(
-            """
-            SELECT chat_id,title
-            FROM channels
-            WHERE bot_status IN ('administrator','creator')
-              AND lower(title) LIKE ?
-            ORDER BY lower(title)
-            LIMIT 50
-            """,
-            (f"%{query}%",),
-        ).fetchall()
+        if query:
+            rows = c.execute(
+                """
+                SELECT chat_id,title,username,chat_type
+                FROM channels
+                WHERE bot_status IN ('administrator','creator')
+                  AND (
+                      lower(title) LIKE ?
+                      OR lower(COALESCE(username,'')) LIKE ?
+                      OR lower(chat_id) LIKE ?
+                  )
+                ORDER BY lower(title)
+                LIMIT 50
+                """,
+                (f"%{query}%", f"%{query}%", f"%{query}%"),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                """
+                SELECT chat_id,title,username,chat_type
+                FROM channels
+                WHERE bot_status IN ('administrator','creator')
+                ORDER BY lower(title)
+                LIMIT 50
+                """
+            ).fetchall()
 
     results = []
 
     for r in rows:
+        title = r["title"] or r["chat_id"]
+        username = r["username"]
+
+        description = "Channel/Course"
+        if username:
+            description += f" \u2022 @{username}"
+
         message = (
-            f"\U0001f4da <b>{esc(r['title'])}</b>\n\n"
-            "Tap to open access control."
+            f"\U0001f4da <b>{esc(title)}</b>\n\n"
+            "Choose Demo Link or Permanent Link below."
         )
 
         results.append(
             InlineQueryResultArticle(
-                id=f"channel_{r['chat_id']}",
-                title=f"\U0001f4da {r['title']}",
-                description="Auto-detected channel",
+                id=f"course_{r['chat_id']}",
+                title=f"\U0001f4da {title}",
+                description=description,
                 input_message_content=InputTextMessageContent(
                     message,
                     parse_mode=ParseMode.HTML,
                 ),
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(
-                        "\U0001f4da Open Control Panel",
-                        callback_data=f"channel:{r['chat_id']}",
-                    )]
+                    [
+                        InlineKeyboardButton(
+                            "\U0001f517 Demo Link",
+                            callback_data=f"link:demo:{r['chat_id']}"
+                        ),
+                        InlineKeyboardButton(
+                            "\U0001f464 Permanent Link",
+                            callback_data=f"link:perm:{r['chat_id']}"
+                        ),
+                    ],
                 ]),
             )
         )
 
     await update.inline_query.answer(
-        results,
+        results=results,
         cache_time=1,
         is_personal=True,
     )

@@ -237,6 +237,10 @@ def rows_buttons(items, cols=2):
     return [items[i:i + cols] for i in range(0, len(items), cols)]
 
 
+def clean_ui_text(text):
+    return str(text)
+
+
 async def safe_edit(query, text, keyboard=None):
     try:
         await query.edit_message_text(
@@ -270,23 +274,25 @@ def local_time(value):
 # HOME / AUTO-DETECTED CHANNELS
 # ============================================================
 def home_keyboard():
-    """
-    Owner Home intentionally contains ONLY two buttons.
-    Courses are opened through inline search, so no category/channel
-    buttons are shown on Home.
-    """
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "\U00002699\ufe0f OWNER PANEL",
-                callback_data="owner"
-            ),
-            InlineKeyboardButton(
-                "\U0001F4CA DAILY REPORT",
-                callback_data="reports"
-            )
-        ]
-    ])
+    """Home UI: Owner sees ONLY Owner Panel + Daily Report."""
+    if owner(OWNER_ID):
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("âï¸ OWNER PANEL", callback_data="owner"),
+                InlineKeyboardButton("ð DAILY REPORT", callback_data="reports"),
+            ]
+        ])
+
+    # Non-owner admins/sellers keep course/category access.
+    with db() as c:
+        cats = c.execute(
+            "SELECT id,emoji,name FROM categories ORDER BY id"
+        ).fetchall()
+    buttons = [
+        InlineKeyboardButton(f"{r['emoji']} {r['name']}", callback_data=f"cat:{r['id']}")
+        for r in cats
+    ]
+    return InlineKeyboardMarkup(rows_buttons(buttons, 2))
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -294,29 +300,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not admin(uid):
         if update.message:
             await update.message.reply_text("â Access denied.")
+        elif update.callback_query:
+            await update.callback_query.answer("â Access denied", show_alert=True)
         return
 
-    with db() as c:
-        channels = c.execute(
-            "SELECT chat_id,title FROM channels ORDER BY title"
-        ).fetchall()
-
-    channel_text = (
-        f"ð¡ <b>Detected Channels: {len(channels)}</b>"
-        if channels else
-        "ð¡ <b>Detected Channels: 0</b>"
-    )
-
     text = (
-        "\U0001F338 <b>Hello Seller Family, Kese Ho</b>\n\n"
-        "I AM WIZARD \U0001F338\U0001F495\n\n"
-        "\U0001F50E <b>Course Search</b>\n"
-        "Telegram ke kisi chat me likho:\n"
-        "<code>@YourBotUsername course-name</code>\n\n"
-        "Search result me course select karo.\n\n"
-        f"{channel_text}\n"
-        "Bot ko kisi channel me administrator banao \u2192 "
-        "channel automatically detect ho jayega."
+        "ð¸ <b>Hello Seller Family, Kese Ho</b>\\n\\n"
+        "I AM WIZARD ð¸ð\\n\\n"
+        "ð <b>Course Search</b>\\n"
+        "Telegram ke kisi chat me likho:\\n"
+        "<code>@YourBotUsername course-name</code>\\n\\n"
+        "Search result me course select karo."
     )
 
     if update.callback_query:
@@ -324,9 +318,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(update.callback_query, text, home_keyboard())
     else:
         await update.message.reply_text(
-            text,
-            reply_markup=home_keyboard(),
-            parse_mode=ParseMode.HTML
+            text, reply_markup=home_keyboard(), parse_mode=ParseMode.HTML
         )
 
 
@@ -1355,27 +1347,27 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [
         [
             InlineKeyboardButton(
-                "\U0001F465 VIEW ADMINS",
+                "ð¥ VIEW ADMINS",
                 callback_data="editadmins"
             ),
             InlineKeyboardButton(
-                "\u2795 ADD ADMIN",
+                "â ADD ADMIN",
                 callback_data="addadmin"
             )
         ],
         [
             InlineKeyboardButton(
-                "\u23F1\ufe0f DEMO TIME",
+                "â±ï¸ DEMO TIME",
                 callback_data="showtime"
             ),
             InlineKeyboardButton(
-                "\U0001F4CA DAILY REPORT",
+                "ð DAILY REPORT",
                 callback_data="reports"
             )
         ],
         [
             InlineKeyboardButton(
-                "\u2B05\ufe0f HOME",
+                "â¬ï¸ HOME",
                 callback_data="home"
             )
         ]
@@ -1684,27 +1676,6 @@ async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
-# DIRECT OWNER HOME CALLBACKS
-# ============================================================
-# These are registered before the generic router so the two Home
-# buttons always have a dedicated handler.
-async def owner_home_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if not owner(q.from_user.id):
-        await q.answer("â Owner only", show_alert=True)
-        return
-    await owner_panel(update, context)
-
-
-async def daily_report_home_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if not owner(q.from_user.id):
-        await q.answer("â Owner only", show_alert=True)
-        return
-    await report_menu(update, context)
-
-
-# ============================================================
 # CALLBACK ROUTER
 # ============================================================
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1809,14 +1780,6 @@ def main():
             chat_member_update,
             ChatMemberHandler.CHAT_MEMBER
         )
-    )
-
-    # Dedicated Home buttons: register before the generic callback router.
-    app.add_handler(
-        CallbackQueryHandler(owner_home_button, pattern=r"^owner$")
-    )
-    app.add_handler(
-        CallbackQueryHandler(daily_report_home_button, pattern=r"^reports$")
     )
 
     app.add_handler(CallbackQueryHandler(callbacks))

@@ -385,37 +385,43 @@ async def course(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # LINK CREATION
 # ============================================================
-async def check_channel_permissions(bot, chat_id):
-    """Return (ok, human_error). Checks the bot's real Telegram permissions."""
+async def check_channel_permissions(bot, chat_id, link_type="demo"):
+    """Check Telegram permissions required for this specific link type."""
     try:
         me = await bot.get_me()
         member = await bot.get_chat_member(chat_id, me.id)
 
         if member.status not in ("administrator", "creator"):
             return False, (
-                "Bot channel ka admin nahi hai.\n"
-                f"Current status: {member.status}"
+                "Bot is not admin in this exact channel.\n"
+                f"Current status: <b>{esc(member.status)}</b>"
             )
 
-        if member.status == "administrator":
-            invite_ok = getattr(member, "can_invite_users", None)
-            ban_ok = getattr(member, "can_restrict_members", None)
+        if member.status == "creator":
+            return True, ""
 
-            if invite_ok is False:
-                return False, (
-                    "Bot admin hai, lekin <b>Invite Users via Link / Add Subscribers</b> "
-                    "permission OFF hai."
-                )
+        invite_ok = getattr(member, "can_invite_users", None)
+        ban_ok = getattr(member, "can_restrict_members", None)
 
-            if ban_ok is False:
-                return False, (
-                    "Link banane ki permission mil rahi hai, lekin Demo auto-remove ke "
-                    "liye <b>Ban Users</b> permission OFF hai."
-                )
+        if invite_ok is not True:
+            return False, (
+                "<b>Add Subscribers / Invite Users via Link = OFF</b>.\n"
+                f"Invite permission: <code>{esc(invite_ok)}</code>\n"
+                f"Ban permission: <code>{esc(ban_ok)}</code>\n\n"
+                "Channel → Administrators → Bot → Add Subscribers ON karke "
+                "Save karo, phir /checkchannel chalao."
+            )
+
+        if link_type == "demo" and ban_ok is not True:
+            return False, (
+                "Demo auto-remove ke liye <b>Ban Users = OFF</b> hai.\n"
+                f"Invite permission: <code>{esc(invite_ok)}</code>\n"
+                f"Ban permission: <code>{esc(ban_ok)}</code>"
+            )
 
         return True, ""
     except Exception as e:
-        return False, f"Telegram check failed: {esc(e)}"
+        return False, f"Telegram permission check failed: <code>{esc(str(e))}</code>"
 
 
 async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -438,7 +444,7 @@ async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = int(r["tg_id"])
-    ok, reason = await check_channel_permissions(context.bot, chat_id)
+    ok, reason = await check_channel_permissions(context.bot, chat_id, typ)
 
     if not ok:
         await q.answer("❌ Channel permission problem", show_alert=True)
@@ -520,15 +526,15 @@ async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except Exception as e:
-        log.exception("create_link")
-        # Show the real Telegram error instead of the generic misleading message.
-        msg = str(e)
+        log.exception("create_chat_invite_link failed")
+        await q.answer("❌ Telegram link creation failed", show_alert=True)
         await edit(
             q,
-            "❌ <b>Telegram link create nahi kar pa raha.</b>\n\n"
-            f"<code>{esc(msg[:900])}</code>\n\n"
-            "Channel में bot की <b>Invite Users via Link / Add Subscribers</b> "
-            "permission check करो.",
+            "❌ <b>Telegram link creation failed</b>\n\n"
+            f"📚 Course: <b>{esc(r['name'])}</b>\n"
+            f"🆔 Channel: <code>{chat_id}</code>\n\n"
+            f"⚠️ Telegram error:\n<code>{esc(str(e))}</code>\n\n"
+            "Permissions ON hain to /checkchannel chalao.",
             InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Back", callback_data=f"course:{course_id}")]
             ])
@@ -576,6 +582,19 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
     with db() as c:
+        existing = c.execute(
+            """
+            SELECT id FROM members
+            WHERE user_id=? AND invite_link=? AND chat_id=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (u.id, invite_url, str(cm.chat.id))
+        ).fetchone()
+
+        if existing:
+            c.execute("UPDATE links SET used=1 WHERE invite_link=?", (invite_url,))
+            return
+
         c.execute(
             """
             INSERT INTO members
@@ -1043,7 +1062,8 @@ async def checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🤖 Bot status: <b>{esc(bot_member.status)}</b>\n"
             f"🔗 Invite/Add Subscribers: <b>{invite}</b>\n"
             f"🚫 Ban Users: <b>{restrict}</b>\n\n"
-            "Link + Demo auto-remove ke liye dono permissions ON honi chahiye.",
+            "Permanent link: Invite permission ON.\\n"
+            "Demo link + auto-remove: Invite + Ban Users dono ON.",
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
@@ -1055,102 +1075,154 @@ async def checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # DAILY REPORT
 # ============================================================
 def make_report(date_string=None):
+    """Owner-only report for one completed Asia/Kolkata calendar day."""
     date_string = date_string or local_date_string()
 
-    # joined_at is stored in UTC. SQLite date() is therefore not suitable
-    # for India-time daily reports around midnight. Filter in Python.
-    target = date_string
     with db() as c:
-        all_rows = c.execute(
-            "SELECT * FROM members ORDER BY joined_at"
-        ).fetchall()
+        links = c.execute("SELECT * FROM links ORDER BY created_at").fetchall()
+        members = c.execute("SELECT * FROM members ORDER BY joined_at").fetchall()
 
-    demo, perm = [], []
-    for r in all_rows:
+    def day_of(value):
         try:
-            d = datetime.fromisoformat(r["joined_at"]).astimezone(IST).date().isoformat()
+            return datetime.fromisoformat(value).astimezone(IST).date().isoformat()
         except Exception:
-            d = r["joined_at"][:10]
-        if d != target:
-            continue
-        if r["link_type"] == "demo":
-            demo.append(r)
-        else:
-            perm.append(r)
+            return str(value)[:10]
+
+    def local_time(value):
+        try:
+            return datetime.fromisoformat(value).astimezone(IST).strftime("%d/%m/%Y %H:%M:%S")
+        except Exception:
+            return str(value)
+
+    day_links = [r for r in links if day_of(r["created_at"]) == date_string]
+    day_members = [r for r in members if day_of(r["joined_at"]) == date_string]
+
+    demo_links = [r for r in day_links if r["link_type"] == "demo"]
+    perm_links = [r for r in day_links if r["link_type"] == "perm"]
+    demo_members = [r for r in day_members if r["link_type"] == "demo"]
+    perm_members = [r for r in day_members if r["link_type"] == "perm"]
 
     text = (
-        "📊 <b>YESTERDAY DAILY REPORT</b> 📊\n"
-        f"📅 Date: {target}\n"
-        "━━━━━━━━━━━━━━\n\n"
-        f"⏳ <b>[ DEMO ADD REPORT ]</b> — {len(demo)} members\n\n"
+        "📊 <b>AUTOMATIC DAILY REPORT</b> 📊\n"
+        f"📅 Date: <b>{date_string}</b> (IST)\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"🔗 <b>LINKS CREATED</b>\n"
+        f"🎓 Demo links: <b>{len(demo_links)}</b>\n"
+        f"💎 Permanent links: <b>{len(perm_links)}</b>\n\n"
     )
 
-    if not demo:
-        text += "❌ Aaj koi Demo member add nahi hua.\n"
+    if day_links:
+        for r in day_links:
+            kind = "🎓 DEMO" if r["link_type"] == "demo" else "💎 PERMANENT"
+            used = "USED" if r["used"] else "UNUSED"
+            text += (
+                f"{kind} — <b>{esc(r['course_name'])}</b>\n"
+                f"👤 Seller/Admin: <b>{esc(r['creator_name'])}</b>\n"
+                f"🕐 Created: {local_time(r['created_at'])}\n"
+                f"📌 Link status: <b>{used}</b>\n\n"
+            )
     else:
-        # Seller-wise grouping while retaining every member forever.
-        sellers = {}
-        for r in demo:
-            sellers.setdefault((r["creator_id"], r["creator_name"]), []).append(r)
+        text += "❌ Aaj koi access link generate nahi hui.\n\n"
 
-        for (_, seller_name), rows in sellers.items():
-            text += f"👤 <b>Seller: {esc(seller_name)}</b> — {len(rows)}\n"
-            for r in rows:
-                status = "Auto Removed" if r["status"] == "removed" else "Active"
-                text += (
-                    f"   📚 {esc(r['course_name'])}\n"
-                    f"   👤 {member_label(r)}\n"
-                    f"   🆔 <code>{r['user_id']}</code>\n"
-                    f"   🕐 {esc(r['joined_at'])}\n"
-                    f"   🚫 {status}\n\n"
-                )
+    text += "━━━━━━━━━━━━━━━━━━\n\n"
+    text += f"🎓 <b>[ DEMO MEMBERS ] — {len(demo_members)}</b>\n\n"
+    if demo_members:
+        for r in demo_members:
+            status = "🚫 Auto Removed" if r["status"] == "removed" else "🟢 Active"
+            text += (
+                f"👤 Seller/Admin: <b>{esc(r['creator_name'])}</b>\n"
+                f"📚 Course: <b>{esc(r['course_name'])}</b>\n"
+                f"👤 Member: {member_label(r)}\n"
+                f"🆔 ID: <code>{r['user_id']}</code>\n"
+                f"🕐 Joined: {local_time(r['joined_at'])}\n"
+                f"{status}\n\n"
+            )
+    else:
+        text += "❌ Aaj koi Demo member join nahi hua.\n\n"
 
+    text += "━━━━━━━━━━━━━━━━━━\n\n"
+    text += f"💎 <b>[ PERMANENT MEMBERS ] — {len(perm_members)}</b>\n\n"
+    if perm_members:
+        for r in perm_members:
+            text += (
+                f"👤 Seller/Admin: <b>{esc(r['creator_name'])}</b>\n"
+                f"📚 Course: <b>{esc(r['course_name'])}</b>\n"
+                f"👤 Member: {member_label(r)}\n"
+                f"🆔 ID: <code>{r['user_id']}</code>\n"
+                f"🕐 Joined: {local_time(r['joined_at'])}\n"
+                "💎 Permanent\n\n"
+            )
+    else:
+        text += "❌ Aaj koi Permanent member join nahi hua.\n\n"
+
+    text += "━━━━━━━━━━━━━━━━━━\n"
     text += (
-        "━━━━━━━━━━━━━━\n\n"
-        f"💎 <b>[ PERMANENT ADD REPORT ]</b> — {len(perm)} members\n\n"
+        f"📌 Total links: <b>{len(day_links)}</b> | "
+        f"Demo members: <b>{len(demo_members)}</b> | "
+        f"Permanent members: <b>{len(perm_members)}</b>"
     )
-
-    if not perm:
-        text += "❌ Aaj koi Permanent member add nahi hua.\n"
-    else:
-        sellers = {}
-        for r in perm:
-            sellers.setdefault((r["creator_id"], r["creator_name"]), []).append(r)
-
-        for (_, seller_name), rows in sellers.items():
-            text += f"👤 <b>Seller: {esc(seller_name)}</b> — {len(rows)}\n"
-            for r in rows:
-                text += (
-                    f"   📚 {esc(r['course_name'])}\n"
-                    f"   👤 {member_label(r)}\n"
-                    f"   🆔 <code>{r['user_id']}</code>\n"
-                    f"   🕐 {esc(r['joined_at'])}\n"
-                    f"   ✅ Permanent\n\n"
-                )
-
     return text
+
+
+def split_report_text(text, limit=3900):
+    """Split long HTML reports into Telegram-safe messages."""
+    if len(text) <= limit:
+        return [text]
+
+    lines = text.splitlines(keepends=True)
+    chunks = []
+    current = ""
+
+    for line in lines:
+        if len(line) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            while len(line) > limit:
+                chunks.append(line[:limit])
+                line = line[limit:]
+            current = line
+        elif current and len(current) + len(line) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current += line
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+async def send_report_to_owner(bot, text):
+    for chunk in split_report_text(text):
+        await bot.send_message(
+            OWNER_ID,
+            chunk,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True
+        )
 
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not owner(update.effective_user.id):
         return
-    await update.message.reply_text(
-        make_report(),
-        parse_mode=ParseMode.HTML
-    )
-
-
+    for chunk in split_report_text(make_report()):
+        await update.message.reply_text(
+            chunk,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True
+        )
 
 async def yesterday_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Owner-only: show the last completed Asia/Kolkata day."""
     if not owner(update.effective_user.id):
         return
     d = (ist_now().date() - timedelta(days=1)).isoformat()
-    await update.message.reply_text(
-        make_report(d),
-        parse_mode=ParseMode.HTML
-    )
-
+    for chunk in split_report_text(make_report(d)):
+        await update.message.reply_text(
+            chunk,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True
+        )
 
 async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1158,14 +1230,22 @@ async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer("❌ Owner only", show_alert=True)
         return
     await q.answer()
+
+    chunks = split_report_text(make_report())
     await edit(
         q,
-        make_report(),
+        chunks[0],
         InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ Owner Panel", callback_data="owner")]
         ])
     )
-
+    for chunk in chunks[1:]:
+        await context.bot.send_message(
+            OWNER_ID,
+            chunk,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True
+        )
 
 async def daily_job(context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1201,17 +1281,15 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
         # reports if the job runs again.
         report_text = make_report(d)
 
-        if OWNER_ID:
-            try:
-                await context.bot.send_message(
-                    OWNER_ID,
-                    report_text,
-                    parse_mode=ParseMode.HTML
-                )
-            except Exception:
-                # Do not mark it sent if Telegram failed.
-                log.exception("daily report send failed")
-                return
+        if not OWNER_ID:
+            log.error("OWNER_ID is missing; daily report NOT marked sent")
+            return
+
+        try:
+            await send_report_to_owner(context.bot, report_text)
+        except Exception:
+            log.exception("daily report send failed")
+            return
 
         c.execute(
             "INSERT INTO reports(report_date,sent_at) VALUES(?,?)",
@@ -1388,7 +1466,7 @@ def main():
     # Daily report check every minute; sends the last completed day after 00:05 IST.
     app.job_queue.run_repeating(daily_job, interval=60, first=20)
 
-    log.info("Bot started")
+    log.info("Bot started | OWNER_ID=%s | DB=%s | Daily report=previous completed IST day", OWNER_ID, DB_PATH)
     app.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=False

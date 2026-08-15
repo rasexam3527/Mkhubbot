@@ -270,36 +270,23 @@ def local_time(value):
 # HOME / AUTO-DETECTED CHANNELS
 # ============================================================
 def home_keyboard():
-    # Home screen intentionally shows ONLY the two owner controls:
-    # Owner Panel + Daily Report. Detected channels stay hidden from Home.
-    with db() as c:
-        cats = c.execute(
-            "SELECT id,emoji,name FROM categories ORDER BY id"
-        ).fetchall()
-
-    buttons = [
-        InlineKeyboardButton(
-            f"{r['emoji']} {r['name']}",
-            callback_data=f"cat:{r['id']}"
-        )
-        for r in cats
-    ]
-
-    kb = rows_buttons(buttons, 2)
-
-    if owner(OWNER_ID):
-        kb.append([
+    """
+    Owner Home intentionally contains ONLY two buttons.
+    Courses are opened through inline search, so no category/channel
+    buttons are shown on Home.
+    """
+    return InlineKeyboardMarkup([
+        [
             InlineKeyboardButton(
-                "âï¸ OWNER PANEL",
+                "\U00002699\ufe0f OWNER PANEL",
                 callback_data="owner"
             ),
             InlineKeyboardButton(
-                "ð DAILY REPORT",
+                "\U0001F4CA DAILY REPORT",
                 callback_data="reports"
             )
-        ])
-
-    return InlineKeyboardMarkup(kb)
+        ]
+    ])
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -321,14 +308,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     text = (
-        "ð¸ <b>Hello Seller Family, Kese Ho</b>\n\n"
-        "I AM WIZARD ð¸ð\n\n"
-        "ð <b>Course Search</b>\n"
+        "\U0001F338 <b>Hello Seller Family, Kese Ho</b>\n\n"
+        "I AM WIZARD \U0001F338\U0001F495\n\n"
+        "\U0001F50E <b>Course Search</b>\n"
         "Telegram ke kisi chat me likho:\n"
         "<code>@YourBotUsername course-name</code>\n\n"
         "Search result me course select karo.\n\n"
         f"{channel_text}\n"
-        "Bot ko kisi channel me administrator banao â "
+        "Bot ko kisi channel me administrator banao \u2192 "
         "channel automatically detect ho jayega."
     )
 
@@ -1368,27 +1355,27 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [
         [
             InlineKeyboardButton(
-                "ð¥ VIEW ADMINS",
+                "\U0001F465 VIEW ADMINS",
                 callback_data="editadmins"
             ),
             InlineKeyboardButton(
-                "â ADD ADMIN",
+                "\u2795 ADD ADMIN",
                 callback_data="addadmin"
             )
         ],
         [
             InlineKeyboardButton(
-                "â±ï¸ DEMO TIME",
+                "\u23F1\ufe0f DEMO TIME",
                 callback_data="showtime"
             ),
             InlineKeyboardButton(
-                "ð DAILY REPORT",
+                "\U0001F4CA DAILY REPORT",
                 callback_data="reports"
             )
         ],
         [
             InlineKeyboardButton(
-                "â¬ï¸ HOME",
+                "\u2B05\ufe0f HOME",
                 callback_data="home"
             )
         ]
@@ -1697,6 +1684,27 @@ async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
+# DIRECT OWNER HOME CALLBACKS
+# ============================================================
+# These are registered before the generic router so the two Home
+# buttons always have a dedicated handler.
+async def owner_home_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not owner(q.from_user.id):
+        await q.answer("â Owner only", show_alert=True)
+        return
+    await owner_panel(update, context)
+
+
+async def daily_report_home_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not owner(q.from_user.id):
+        await q.answer("â Owner only", show_alert=True)
+        return
+    await report_menu(update, context)
+
+
+# ============================================================
 # CALLBACK ROUTER
 # ============================================================
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1801,6 +1809,14 @@ def main():
             chat_member_update,
             ChatMemberHandler.CHAT_MEMBER
         )
+    )
+
+    # Dedicated Home buttons: register before the generic callback router.
+    app.add_handler(
+        CallbackQueryHandler(owner_home_button, pattern=r"^owner$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(daily_report_home_button, pattern=r"^reports$")
     )
 
     app.add_handler(CallbackQueryHandler(callbacks))

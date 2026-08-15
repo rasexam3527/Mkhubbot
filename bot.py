@@ -48,6 +48,8 @@ except Exception:
 # DATABASE
 # ============================================================
 def db():
+    parent = os.path.dirname(os.path.abspath(DB_PATH))
+    os.makedirs(parent, exist_ok=True)
     c = sqlite3.connect(DB_PATH, timeout=30)
     c.row_factory = sqlite3.Row
     return c
@@ -108,6 +110,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS settings(
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS detected_chats(
+            chat_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            username TEXT,
+            chat_type TEXT NOT NULL,
+            detected_at TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS reports(
@@ -248,22 +258,11 @@ async def edit(q, text, kb=None):
 # HOME / COURSE LIST
 # ============================================================
 def home_kb():
-    with db() as c:
-        rows = c.execute(
-            "SELECT id,emoji,name FROM categories ORDER BY id"
-        ).fetchall()
-
-    b = [
-        InlineKeyboardButton(
-            f"{r['emoji']} {r['name']}",
-            callback_data=f"cat:{r['id']}"
-        ) for r in rows
-    ]
-    kb = rows_buttons(b, 2)
-
+    kb = []
     if OWNER_ID:
         kb.append([
-            InlineKeyboardButton("⚙️ Owner Panel", callback_data="owner")
+            InlineKeyboardButton("⚙️ OWNER PANEL", callback_data="owner"),
+            InlineKeyboardButton("📊 DAILY REPORT", callback_data="report")
         ])
     return InlineKeyboardMarkup(kb)
 
@@ -427,50 +426,43 @@ async def check_channel_permissions(bot, chat_id, link_type="demo"):
 
 async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+
     try:
         await q.answer()
     except Exception:
         pass
-    _, typ, course_id_s = q.data.split(":")
-    course_id = int(course_id_s)
-
-    if not can(q.from_user.id, typ):
-        await edit(q, "❌ <b>Permission denied</b>.")
-        return
-
-    with db() as c:
-        r = c.execute(
-            "SELECT * FROM courses WHERE id=?", (course_id,)
-        ).fetchone()
-
-    if not r:
-        await edit(q, "❌ <b>Course not found</b>.")
-        return
-
-    chat_id = int(r["tg_id"])
-    ok, reason = await check_channel_permissions(context.bot, chat_id, typ)
-
-    if not ok:
-        await edit(
-            q,
-            "❌ <b>Link create nahi hua</b>\n\n"
-            f"📚 Course: <b>{esc(r['name'])}</b>\n\n"
-            f"⚠️ {reason}\n\n"
-            "Telegram channel → Administrators → Bot → "
-            "<b>Invite Users via Link / Add Subscribers</b> ON karo.\n"
-            "Demo ke liye <b>Ban Users</b> bhi ON rakho.\n\n"
-            "Permission save karne ke baad bot ko ek baar remove karke "
-            "dobara admin banana useful hai.",
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Back", callback_data=f"course:{course_id}")]
-            ])
-        )
-        return
 
     try:
+        _, typ, course_id_s = q.data.split(":")
+        course_id = int(course_id_s)
+
+        if typ not in ("demo", "perm"):
+            await edit(q, "❌ <b>Invalid link type.</b>")
+            return
+
+        if not can(q.from_user.id, typ):
+            await edit(
+                q,
+                "❌ <b>Permission denied.</b>\n\n"
+                f"You do not have <code>{esc(typ)}</code> access."
+            )
+            return
+
+        with db() as c:
+            r = c.execute(
+                "SELECT * FROM courses WHERE id=?", (course_id,)
+            ).fetchone()
+
+        if not r:
+            await edit(q, "❌ <b>Course not found.</b>")
+            return
+
+        chat_id = int(r["tg_id"])
         created = now()
         creator = admin_name(q.from_user.id)
 
+        # Telegram is the source of truth for channel permissions.
+        # Do not block valid admins with a local permission pre-check.
         link = await context.bot.create_chat_invite_link(
             chat_id=chat_id,
             name=f"{typ}_{q.from_user.id}_{created.strftime('%Y%m%d%H%M%S')}",
@@ -487,35 +479,34 @@ async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 VALUES(?,?,?,?,?,?,?,?,0)
                 """,
                 (
-                    link.invite_link, str(chat_id), course_id,
-                    r["name"], typ, q.from_user.id, creator,
-                    iso(created)
+                    link.invite_link, str(chat_id), course_id, r["name"],
+                    typ, q.from_user.id, creator, iso(created)
                 )
             )
 
         if typ == "demo":
             title = "🎓 <b>Access Granted: Demo Pass</b> ⏳"
             body = (
-                f"━━━━━━━━━━━━━━\n\n"
-                f"🏢 <b>चैनल / कोर्स का नाम:</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n\n"
+                "🏢 <b>चैनल / कोर्स का नाम:</b>\n"
                 f"➜ {esc(r['name'])}\n\n"
-                f"📥 <b>यहाँ से ज्वाइन करें:</b>\n"
+                "📥 <b>यहाँ से ज्वाइन करें:</b>\n"
                 f"🔗 <a href=\"{esc(link.invite_link)}\">Open Demo Link</a>\n\n"
-                f"📌 <b>महत्वपूर्ण निर्देश:</b>\n"
-                f"⚠️ यह Demo Joining Link केवल 1 बार काम करेगा।\n"
+                "📌 <b>महत्वपूर्ण निर्देश:</b>\n"
+                "⚠️ यह Demo Joining Link केवल 1 बार काम करेगा।\n"
                 f"⏱ सिस्टम आपको चैनल में जुड़ने के ठीक "
                 f"<b>{demo_minutes()} मिनट</b> बाद automatic remove करेगा।"
             )
         else:
             title = "💎 <b>Access Granted: Permanent Pass</b> 💎"
             body = (
-                f"━━━━━━━━━━━━━━\n\n"
-                f"🏢 <b>चैनल / कोर्स का नाम:</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n\n"
+                "🏢 <b>चैनल / कोर्स का नाम:</b>\n"
                 f"➜ {esc(r['name'])}\n\n"
-                f"📥 <b>यहाँ से ज्वाइन करें:</b>\n"
+                "📥 <b>यहाँ से ज्वाइन करें:</b>\n"
                 f"🔗 <a href=\"{esc(link.invite_link)}\">Open Permanent Link</a>\n\n"
-                f"📌 <b>महत्वपूर्ण निर्देश:</b>\n"
-                f"⚠️ यह Permanent Joining Link केवल 1 बार काम करेगा।"
+                "📌 <b>महत्वपूर्ण निर्देश:</b>\n"
+                "⚠️ यह Permanent Joining Link केवल 1 बार काम करेगा।"
             )
 
         await edit(
@@ -529,18 +520,15 @@ async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except Exception as e:
-        log.exception("create_link")
-        # Show the real Telegram error instead of the generic misleading message.
-        msg = str(e)
+        log.exception("create invite link failed")
         await edit(
             q,
-            "❌ <b>Telegram link create nahi kar pa raha.</b>\n\n"
-            f"<code>{esc(msg[:900])}</code>\n\n"
-            "Channel में bot की <b>Invite Users via Link / Add Subscribers</b> "
-            "permission check करो.",
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Back", callback_data=f"course:{course_id}")]
-            ])
+            "❌ <b>Link create nahi hua</b>\n\n"
+            f"⚠️ Telegram error:\n<code>{esc(str(e)[:2500])}</code>\n\n"
+            "🛠️ Owner:\n"
+            "<code>/checkchannel -100XXXXXXXXXX</code>\n\n"
+            "Bot ko exact channel me Administrator rakho aur "
+            "<b>Invite Users / Add Subscribers</b> permission ON karo."
         )
 
 
@@ -707,8 +695,8 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("✏️ Edit Access", callback_data="editadmins")
         ],
         [
-            InlineKeyboardButton("➕ New Category", callback_data="addcat"),
-            InlineKeyboardButton("➕ Add Course", callback_data="pickcat")
+            InlineKeyboardButton("➕ Add Course", callback_data="pickcat"),
+            InlineKeyboardButton("📡 Channel Detect", callback_data="channels")
         ],
         [
             InlineKeyboardButton("⏱ Demo Time", callback_data="showtime"),
@@ -1031,6 +1019,155 @@ async def add_course_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ADD_COURSE
 
 
+async def detectchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not owner(update.effective_user.id):
+        return
+    if not context.args:
+        await update.message.reply_text("Use: /detectchannel -1001234567890")
+        return
+    try:
+        chat_id = int(context.args[0])
+        chat = await context.bot.get_chat(chat_id)
+        me = await context.bot.get_me()
+        member = await context.bot.get_chat_member(chat_id, me.id)
+
+        if member.status not in ("administrator", "creator"):
+            await update.message.reply_text(
+                f"❌ Bot admin nahi hai. Current status: {member.status}"
+            )
+            return
+
+        with db() as c:
+            c.execute(
+                """
+                INSERT OR REPLACE INTO detected_chats
+                (chat_id,title,username,chat_type,detected_at)
+                VALUES(?,?,?,?,?)
+                """,
+                (
+                    str(chat.id),
+                    getattr(chat, "title", str(chat.id)),
+                    getattr(chat, "username", None),
+                    getattr(chat, "type", "channel"),
+                    iso(now())
+                )
+            )
+
+        await update.message.reply_text(
+            f"✅ Channel detected:\n"
+            f"📡 <b>{esc(getattr(chat, 'title', str(chat.id)))}</b>\n"
+            f"🆔 <code>{chat.id}</code>\n"
+            f"🤖 Bot status: <b>{esc(member.status)}</b>",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            "❌ Channel detect failed:\n"
+            f"<code>{esc(str(e)[:1500])}</code>",
+            parse_mode=ParseMode.HTML
+        )
+
+
+async def show_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not owner(q.from_user.id):
+        await q.answer("❌ Owner only", show_alert=True)
+        return
+    await q.answer()
+
+    with db() as c:
+        rows = c.execute(
+            "SELECT * FROM detected_chats ORDER BY detected_at DESC"
+        ).fetchall()
+
+    if not rows:
+        text = (
+            "📡 <b>CHANNEL DETECT</b>\n\n"
+            "Abhi channel detect nahi hua.\n\n"
+            "Owner chat me:\n"
+            "<code>/detectchannel -1001234567890</code>\n\n"
+            "Ya bot ko channel me admin banakar channel me ek post karo."
+        )
+    else:
+        text = "📡 <b>DETECTED CHANNELS</b>\n\n"
+        for r in rows:
+            text += (
+                f"📡 <b>{esc(r['title'])}</b>\n"
+                f"🆔 <code>{esc(r['chat_id'])}</code>\n"
+                f"🤖 Type: {esc(r['chat_type'])}\n\n"
+            )
+
+    await edit(
+        q,
+        text,
+        InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Refresh", callback_data="channels")],
+            [InlineKeyboardButton("⬅️ Owner Panel", callback_data="owner")]
+        ])
+    )
+
+
+async def my_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cm = update.my_chat_member
+    if not cm or not cm.chat:
+        return
+    if getattr(cm.chat, "type", None) != "channel":
+        return
+    if cm.new_chat_member.status not in ("administrator", "creator"):
+        return
+
+    with db() as c:
+        c.execute(
+            """
+            INSERT OR REPLACE INTO detected_chats
+            (chat_id,title,username,chat_type,detected_at)
+            VALUES(?,?,?,?,?)
+            """,
+            (
+                str(cm.chat.id),
+                cm.chat.title or str(cm.chat.id),
+                getattr(cm.chat, "username", None),
+                "channel",
+                iso(now())
+            )
+        )
+
+    if OWNER_ID:
+        try:
+            await context.bot.send_message(
+                OWNER_ID,
+                "📡 <b>CHANNEL DETECTED</b>\n\n"
+                f"📚 {esc(cm.chat.title or str(cm.chat.id))}\n"
+                f"🆔 <code>{cm.chat.id}</code>\n"
+                "✅ Bot is admin.",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+
+
+async def channel_post_detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if not chat or getattr(chat, "type", None) != "channel":
+        return
+
+    with db() as c:
+        c.execute(
+            """
+            INSERT OR REPLACE INTO detected_chats
+            (chat_id,title,username,chat_type,detected_at)
+            VALUES(?,?,?,?,?)
+            """,
+            (
+                str(chat.id),
+                chat.title or str(chat.id),
+                getattr(chat, "username", None),
+                "channel",
+                iso(now())
+            )
+        )
+
+
 async def checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Owner diagnostic: /checkchannel -100123..."""
     if not owner(update.effective_user.id):
@@ -1056,6 +1193,22 @@ async def checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         invite = bool(getattr(bot_member, "can_invite_users", False))
         restrict = bool(getattr(bot_member, "can_restrict_members", False))
         status = str(bot_member.status)
+
+        with db() as c:
+            c.execute(
+                """
+                INSERT OR REPLACE INTO detected_chats
+                (chat_id,title,username,chat_type,detected_at)
+                VALUES(?,?,?,?,?)
+                """,
+                (
+                    str(chat.id),
+                    getattr(chat, "title", str(chat.id)),
+                    getattr(chat, "username", None),
+                    getattr(chat, "type", "channel"),
+                    iso(now())
+                )
+            )
 
         text = (
             "🔎 <b>CHANNEL CHECK</b>\n\n"
@@ -1368,6 +1521,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_time(update, context)
         elif d == "report":
             await report_button(update, context)
+        elif d == "channels":
+            await show_channels(update, context)
         elif d == "addcat":
             await add_category_start(update, context)
         elif d == "pickcat":
@@ -1472,8 +1627,23 @@ def main():
     app.add_handler(CommandHandler("dailyreport", report))
     app.add_handler(CommandHandler("yesterdayreport", yesterday_report))
     app.add_handler(CommandHandler("checkchannel", checkchannel))
+    app.add_handler(CommandHandler("detectchannel", detectchannel))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(InlineQueryHandler(inline_search))
+
+    # Automatically detect channels when the bot is made admin or receives a post.
+    app.add_handler(
+        ChatMemberHandler(
+            my_chat_member_update,
+            ChatMemberHandler.MY_CHAT_MEMBER
+        )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.CHANNEL,
+            channel_post_detect
+        )
+    )
 
     # Required for actual member-join tracking.
     app.add_handler(

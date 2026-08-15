@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import logging
+from urllib.parse import urlparse
 
 from telegram import (
     Update,
@@ -46,10 +47,19 @@ def db():
     return sqlite3.connect(DB)
 
 
+def column_exists(con, table, column):
+    rows = con.execute(
+        f"PRAGMA table_info({table})"
+    ).fetchall()
+
+    return any(row[1] == column for row in rows)
+
+
 def init_db():
     con = db()
     cur = con.cursor()
 
+    # USERS
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -59,6 +69,7 @@ def init_db():
         )
     """)
 
+    # SELLERS
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sellers (
             user_id INTEGER PRIMARY KEY,
@@ -66,6 +77,7 @@ def init_db():
         )
     """)
 
+    # COURSES
     cur.execute("""
         CREATE TABLE IF NOT EXISTS courses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,14 +85,54 @@ def init_db():
             icon TEXT DEFAULT '📕',
             photo_file_id TEXT,
             demo_link TEXT,
+            demo_material_link TEXT,
             permanent_link TEXT,
-            channel_link TEXT
+            permanent_material_link TEXT,
+            channel_link TEXT,
+            channel_id INTEGER,
+            channel_name TEXT,
+            channel_username TEXT
         )
     """)
+
+    # CHANNELS
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS channels (
+            chat_id INTEGER PRIMARY KEY,
+            title TEXT,
+            username TEXT,
+            invite_link TEXT,
+            latest_message_id INTEGER,
+            latest_message_link TEXT,
+            first_material_link TEXT
+        )
+    """)
+
+    # Migration for older DB
+    migrations = [
+        ("courses", "demo_material_link", "TEXT"),
+        ("courses", "permanent_material_link", "TEXT"),
+        ("courses", "channel_id", "INTEGER"),
+        ("courses", "channel_name", "TEXT"),
+        ("courses", "channel_username", "TEXT"),
+    ]
+
+    for table, column, typ in migrations:
+        if not column_exists(con, table, column):
+            try:
+                cur.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {typ}"
+                )
+            except Exception:
+                pass
 
     con.commit()
     con.close()
 
+
+# =========================================================
+# USER
+# =========================================================
 
 def save_user(user):
     if not user:
@@ -88,12 +140,12 @@ def save_user(user):
 
     con = db()
 
-    existing = con.execute(
+    row = con.execute(
         "SELECT user_id FROM users WHERE user_id = ?",
         (user.id,),
     ).fetchone()
 
-    if existing:
+    if row:
         con.execute(
             """
             UPDATE users
@@ -146,10 +198,224 @@ def seller_permission(user_id):
 
 
 # =========================================================
+# TELEGRAM MESSAGE LINK
+# =========================================================
+
+def make_message_link(chat_id, message_id, username=None):
+    """
+    Public channel:
+        https://t.me/channelusername/message_id
+
+    Private channel:
+        https://t.me/c/internal_id/message_id
+    """
+
+    if not chat_id or not message_id:
+        return None
+
+    if username:
+        username = username.lstrip("@")
+
+        return (
+            f"https://t.me/{username}/{message_id}"
+        )
+
+    # Telegram private supergroup/channel IDs
+    # usually look like -100xxxxxxxxxx
+    chat_str = str(chat_id)
+
+    if chat_str.startswith("-100"):
+        internal_id = chat_str[4:]
+
+        return (
+            f"https://t.me/c/{internal_id}/{message_id}"
+        )
+
+    return None
+
+
+# =========================================================
+# CHANNEL SAVE
+# =========================================================
+
+def save_channel(
+    chat_id,
+    title=None,
+    username=None,
+    invite_link=None,
+    latest_message_id=None,
+):
+    con = db()
+
+    existing = con.execute(
+        """
+        SELECT first_material_link
+        FROM channels
+        WHERE chat_id = ?
+        """,
+        (chat_id,),
+    ).fetchone()
+
+    first_material = (
+        existing[0]
+        if existing and existing[0]
+        else None
+    )
+
+    latest_link = make_message_link(
+        chat_id,
+        latest_message_id,
+        username,
+    )
+
+    con.execute(
+        """
+        INSERT OR REPLACE INTO channels
+        (
+            chat_id,
+            title,
+            username,
+            invite_link,
+            latest_message_id,
+            latest_message_link,
+            first_material_link
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            chat_id,
+            title or "",
+            username or "",
+            invite_link or "",
+            latest_message_id,
+            latest_link,
+            first_material,
+        ),
+    )
+
+    con.commit()
+    con.close()
+
+
+# =========================================================
+# AUTO CHANNEL POST DETECTION
+# =========================================================
+
+async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    post = update.channel_post
+
+    if not post:
+        return
+
+    chat = post.chat
+
+    username = getattr(chat, "username", None)
+
+    link = make_message_link(
+        chat.id,
+        post.message_id,
+        username,
+    )
+
+    save_channel(
+        chat_id=chat.id,
+        title=chat.title,
+        username=username,
+        latest_message_id=post.message_id,
+    )
+
+    logger.info(
+        "CHANNEL DETECTED: %s | %s | %s",
+        chat.id,
+        chat.title,
+        link,
+    )
+
+    # Notify owner
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=(
+                    "📢 *CHANNEL POST DETECTED*\n\n"
+                    f"📌 Channel: {chat.title}\n"
+                    f"🆔 ID: `{chat.id}`\n"
+                    f"🔗 Message: {link or 'Link unavailable'}\n\n"
+                    "अगर यह batch का first message है तो "
+                    "इसे Material Link बनाया जा सकता है।"
+                ),
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.warning(
+                "Owner notification failed: %s",
+                e,
+            )
+
+
+# =========================================================
+# BOT ADDED / ADMIN DETECTION
+# =========================================================
+
+async def my_chat_member(update, context):
+
+    member_update = update.my_chat_member
+
+    if not member_update:
+        return
+
+    chat = member_update.chat
+
+    # Only channels
+    if chat.type != "channel":
+        return
+
+    new_status = member_update.new_chat_member.status
+
+    if new_status not in (
+        "administrator",
+        "creator",
+    ):
+        return
+
+    username = getattr(chat, "username", None)
+
+    save_channel(
+        chat_id=chat.id,
+        title=chat.title,
+        username=username,
+    )
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=(
+                    "✅ *CHANNEL ADMIN DETECTED*\n\n"
+                    f"📢 Channel: {chat.title}\n"
+                    f"🆔 ID: `{chat.id}`\n"
+                    f"👑 Bot Status: `{new_status}`\n\n"
+                    "Bot channel me successfully add/admin hai.\n\n"
+                    "⚠️ Purane messages Telegram Bot API "
+                    "se automatically scan nahi ho sakte.\n"
+                    "Naya channel post aate hi bot uska link "
+                    "automatically capture karega."
+                ),
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.warning(
+                "Admin notification failed: %s",
+                e,
+            )
+
+
+# =========================================================
 # MAIN MENU
 # =========================================================
 
 def main_menu(user_id):
+
     buttons = [
         [
             InlineKeyboardButton(
@@ -184,25 +450,27 @@ def main_menu(user_id):
 # START
 # =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+async def start(update, context):
 
-    save_user(user)
+    save_user(update.effective_user)
 
     await update.message.reply_text(
         "🎓 *RAJ COURSE BOT*\n\n"
-        f"Hello {user.first_name or 'Friend'} ❤️\n\n"
+        f"Hello {update.effective_user.first_name or 'Friend'} ❤️\n\n"
         "Welcome! नीचे से अपना option चुनें 👇",
-        reply_markup=main_menu(user.id),
+        reply_markup=main_menu(
+            update.effective_user.id
+        ),
         parse_mode="Markdown",
     )
 
 
 # =========================================================
-# COURSE LIST
+# COURSES
 # =========================================================
 
 async def show_courses(query):
+
     con = db()
 
     rows = con.execute(
@@ -216,6 +484,7 @@ async def show_courses(query):
     con.close()
 
     if not rows:
+
         await query.edit_message_text(
             "📚 अभी कोई course available नहीं है।",
             reply_markup=InlineKeyboardMarkup([
@@ -227,11 +496,13 @@ async def show_courses(query):
                 ]
             ]),
         )
+
         return
 
     buttons = []
 
     for course_id, name, icon in rows:
+
         buttons.append([
             InlineKeyboardButton(
                 f"{icon or '📕'} {name}",
@@ -247,7 +518,7 @@ async def show_courses(query):
     ])
 
     await query.edit_message_text(
-        "📚 *OUR COURSES*\n\n"
+        "📚 *COURSE LIST*\n\n"
         "अपना course select करें 👇",
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="Markdown",
@@ -255,10 +526,11 @@ async def show_courses(query):
 
 
 # =========================================================
-# COURSE DETAIL
+# COURSE DETAILS
 # =========================================================
 
-async def show_course(query, context, course_id):
+async def show_course(query, course_id):
+
     con = db()
 
     row = con.execute(
@@ -269,7 +541,9 @@ async def show_course(query, context, course_id):
             icon,
             photo_file_id,
             demo_link,
+            demo_material_link,
             permanent_link,
+            permanent_material_link,
             channel_link
         FROM courses
         WHERE id = ?
@@ -290,52 +564,89 @@ async def show_course(query, context, course_id):
         course_id,
         name,
         icon,
-        photo_file_id,
-        demo_link,
-        permanent_link,
-        channel_link,
+        photo,
+        demo,
+        demo_material,
+        permanent,
+        permanent_material,
+        channel,
     ) = row
 
     user_id = query.from_user.id
 
+    permission = seller_permission(user_id)
+
     buttons = []
 
-    # Demo
-    if demo_link:
+    # -----------------------------------------------------
+    # DEMO
+    # -----------------------------------------------------
+
+    if demo:
         buttons.append([
             InlineKeyboardButton(
-                "🎁 Demo Link",
-                url=demo_link,
+                "🎬 Demo Link",
+                url=demo,
             )
         ])
 
-    # Permanent
-    permission = seller_permission(user_id)
-
-    if is_admin(user_id):
-        if permanent_link:
+        if demo_material:
             buttons.append([
                 InlineKeyboardButton(
-                    "🔒 Permanent Link",
-                    url=permanent_link,
+                    "📚 Demo Material",
+                    url=demo_material,
+                )
+            ])
+
+    # -----------------------------------------------------
+    # PERMANENT
+    # -----------------------------------------------------
+
+    if is_admin(user_id):
+
+        if permanent:
+            buttons.append([
+                InlineKeyboardButton(
+                    "🔐 Permanent Link",
+                    url=permanent,
+                )
+            ])
+
+        if permanent_material:
+            buttons.append([
+                InlineKeyboardButton(
+                    "📚 Permanent Material",
+                    url=permanent_material,
                 )
             ])
 
     elif permission == "demo_permanent":
-        if permanent_link:
+
+        if permanent:
             buttons.append([
                 InlineKeyboardButton(
-                    "🔒 Permanent Link",
-                    url=permanent_link,
+                    "🔐 Permanent Link",
+                    url=permanent,
                 )
             ])
 
-    # Channel
-    if channel_link:
+        if permanent_material:
+            buttons.append([
+                InlineKeyboardButton(
+                    "📚 Permanent Material",
+                    url=permanent_material,
+                )
+            ])
+
+    # -----------------------------------------------------
+    # CHANNEL
+    # -----------------------------------------------------
+
+    if channel:
         buttons.append([
             InlineKeyboardButton(
                 "📢 Course Channel",
-                url=channel_link,
+                url=channel,
             )
         ])
 
@@ -351,27 +662,6 @@ async def show_course(query, context, course_id):
         "नीचे से अपना option select करें 👇"
     )
 
-    # Course photo
-    if photo_file_id:
-        try:
-            await query.message.delete()
-
-            await context.bot.send_photo(
-                chat_id=query.message.chat_id,
-                photo=photo_file_id,
-                caption=text,
-                reply_markup=InlineKeyboardMarkup(buttons),
-                parse_mode="Markdown",
-            )
-
-            return
-
-        except Exception as e:
-            logger.warning(
-                "Photo send failed: %s",
-                e,
-            )
-
     await query.edit_message_text(
         text,
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -384,23 +674,29 @@ async def show_course(query, context, course_id):
 # =========================================================
 
 async def show_channels(query):
+
     con = db()
 
     rows = con.execute(
         """
-        SELECT id, name, icon
-        FROM courses
-        WHERE channel_link IS NOT NULL
-        AND channel_link != ''
-        ORDER BY id DESC
+        SELECT
+            chat_id,
+            title,
+            username,
+            latest_message_link
+        FROM channels
+        ORDER BY title
         """
     ).fetchall()
 
     con.close()
 
     if not rows:
+
         await query.edit_message_text(
-            "📢 अभी कोई channel available नहीं है।",
+            "📢 अभी कोई channel detect नहीं हुआ।\n\n"
+            "Bot को channel में Admin बनाओ और "
+            "channel में नया post करो।",
             reply_markup=InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton(
@@ -410,15 +706,17 @@ async def show_channels(query):
                 ]
             ]),
         )
+
         return
 
     buttons = []
 
-    for course_id, name, icon in rows:
+    for chat_id, title, username, latest_link in rows:
+
         buttons.append([
             InlineKeyboardButton(
-                f"{icon or '📢'} {name}",
-                callback_data=f"channel_{course_id}",
+                f"📢 {title or 'Channel'}",
+                callback_data=f"detected_channel_{chat_id}",
             )
         ])
 
@@ -430,53 +728,84 @@ async def show_channels(query):
     ])
 
     await query.edit_message_text(
-        "📢 *COURSE CHANNELS*\n\n"
-        "अपना channel select करें 👇",
+        "📢 *DETECTED CHANNELS*\n\n"
+        "Channel select करें 👇",
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="Markdown",
     )
 
 
-async def open_channel(query, course_id):
+# =========================================================
+# DETECTED CHANNEL
+# =========================================================
+
+async def show_detected_channel(query, chat_id):
+
     con = db()
 
     row = con.execute(
         """
-        SELECT name, channel_link
-        FROM courses
-        WHERE id = ?
+        SELECT
+            title,
+            username,
+            latest_message_link,
+            first_material_link
+        FROM channels
+        WHERE chat_id = ?
         """,
-        (course_id,),
+        (chat_id,),
     ).fetchone()
 
     con.close()
 
-    if not row or not row[1]:
+    if not row:
         await query.answer(
-            "Channel available नहीं है ❌",
+            "Channel नहीं मिला।",
             show_alert=True,
         )
         return
 
-    name, link = row
+    title, username, latest_link, material = row
+
+    buttons = []
+
+    if username:
+        buttons.append([
+            InlineKeyboardButton(
+                "📢 Open Channel",
+                url=f"https://t.me/{username}",
+            )
+        ])
+
+    if latest_link:
+        buttons.append([
+            InlineKeyboardButton(
+                "📚 Latest Material",
+                url=latest_link,
+            )
+        ])
+
+    if material:
+        buttons.append([
+            InlineKeyboardButton(
+                "📖 First / Batch Material",
+                url=material,
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "🔙 Channels",
+            callback_data="channels",
+        )
+    ])
 
     await query.edit_message_text(
-        f"📢 *{name}*\n\n"
-        "नीचे channel open करें 👇",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "📢 Open Channel",
-                    url=link,
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🔙 Channels",
-                    callback_data="channels",
-                )
-            ],
-        ]),
+        "📢 *CHANNEL DETAILS*\n\n"
+        f"Name: {title or 'Unknown'}\n"
+        f"Username: @{username or 'Private'}\n\n"
+        "नीचे से open करें 👇",
+        reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="Markdown",
     )
 
@@ -486,6 +815,7 @@ async def open_channel(query, course_id):
 # =========================================================
 
 async def show_account(query):
+
     user = query.from_user
 
     permission = seller_permission(user.id)
@@ -497,7 +827,7 @@ async def show_account(query):
     elif permission == "demo_permanent":
         access = "🔵 Seller - Demo + Permanent"
     else:
-        access = "👤 Normal User - Demo Only"
+        access = "👤 User - Demo"
 
     await query.edit_message_text(
         "👤 *MY ACCOUNT*\n\n"
@@ -522,6 +852,7 @@ async def show_account(query):
 # =========================================================
 
 def admin_menu():
+
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
@@ -529,8 +860,14 @@ def admin_menu():
                 callback_data="admin_add_course",
             ),
             InlineKeyboardButton(
-                "📚 Manage Courses",
+                "📚 Courses",
                 callback_data="admin_courses",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "📢 Detected Channels",
+                callback_data="admin_channels",
             ),
         ],
         [
@@ -559,16 +896,19 @@ def admin_menu():
             InlineKeyboardButton(
                 "🔙 Main Menu",
                 callback_data="back",
-            ),
+            )
         ],
     ])
 
 
 async def admin_command(update, context):
+
     if not is_admin(update.effective_user.id):
+
         await update.message.reply_text(
             "❌ Admin access नहीं है।"
         )
+
         return
 
     await update.message.reply_text(
@@ -580,6 +920,7 @@ async def admin_command(update, context):
 
 
 async def show_admin(query):
+
     await query.edit_message_text(
         "👑 *OWNER PANEL*\n\n"
         "नीचे से option चुनें 👇",
@@ -589,10 +930,11 @@ async def show_admin(query):
 
 
 # =========================================================
-# ADD COURSE START
+# ADD COURSE
 # =========================================================
 
 async def start_add_course(query, context):
+
     if not is_admin(query.from_user.id):
         return
 
@@ -613,26 +955,28 @@ async def start_add_course(query, context):
 # =========================================================
 
 async def start_add_seller(query, context):
+
     if not is_admin(query.from_user.id):
         return
 
     context.user_data.clear()
+
     context.user_data["state"] = "seller_id"
 
     await query.edit_message_text(
         "➕ *ADD SELLER*\n\n"
-        "Seller का Telegram numeric User ID भेजें:\n\n"
-        "Example:\n"
-        "`123456789`",
+        "Seller का numeric Telegram User ID भेजें:",
         parse_mode="Markdown",
     )
 
 
 async def start_remove_seller(query, context):
+
     if not is_admin(query.from_user.id):
         return
 
     context.user_data.clear()
+
     context.user_data["state"] = "remove_seller"
 
     await query.edit_message_text(
@@ -643,10 +987,11 @@ async def start_remove_seller(query, context):
 
 
 # =========================================================
-# ADMIN TEXT INPUT
+# ADMIN TEXT
 # =========================================================
 
-async def handle_admin_input(update, context):
+async def admin_text(update, context):
+
     user = update.effective_user
 
     if not is_admin(user.id):
@@ -666,21 +1011,23 @@ async def handle_admin_input(update, context):
     if state == "seller_id":
 
         if not value.isdigit():
+
             await update.message.reply_text(
-                "❌ सही numeric User ID भेजो।"
+                "❌ Numeric User ID भेजो।"
             )
+
             return
 
         context.user_data["seller_id"] = int(value)
         context.user_data["state"] = "seller_permission"
 
         await update.message.reply_text(
-            "🔐 Seller permission भेजें:\n\n"
+            "🔐 Access भेजो:\n\n"
             "`demo`\n"
-            "➡️ सिर्फ Demo\n\n"
+            "सिर्फ Demo\n\n"
             "या\n\n"
             "`demo_permanent`\n"
-            "➡️ Demo + Permanent",
+            "Demo + Permanent",
             parse_mode="Markdown",
         )
 
@@ -692,14 +1039,16 @@ async def handle_admin_input(update, context):
 
     if state == "seller_permission":
 
-        if value not in [
+        if value not in (
             "demo",
             "demo_permanent",
-        ]:
+        ):
+
             await update.message.reply_text(
                 "❌ सिर्फ `demo` या `demo_permanent` भेजो।",
                 parse_mode="Markdown",
             )
+
             return
 
         seller_id = context.user_data["seller_id"]
@@ -740,8 +1089,8 @@ async def handle_admin_input(update, context):
 
         await update.message.reply_text(
             "✅ *SELLER ADDED*\n\n"
-            f"👤 User ID: `{seller_id}`\n"
-            f"🔐 Access: {access}",
+            f"👤 ID: `{seller_id}`\n"
+            f"🔐 {access}",
             reply_markup=admin_menu(),
             parse_mode="Markdown",
         )
@@ -755,9 +1104,11 @@ async def handle_admin_input(update, context):
     if state == "remove_seller":
 
         if not value.isdigit():
+
             await update.message.reply_text(
                 "❌ Numeric User ID भेजो।"
             )
+
             return
 
         seller_id = int(value)
@@ -784,7 +1135,7 @@ async def handle_admin_input(update, context):
         context.user_data.clear()
 
         await update.message.reply_text(
-            "✅ Seller access remove कर दिया गया।",
+            "✅ Seller access remove हो गया।",
             reply_markup=admin_menu(),
         )
 
@@ -808,7 +1159,7 @@ async def handle_admin_input(update, context):
         return
 
     # -----------------------------------------------------
-    # COURSE ICON
+    # ICON
     # -----------------------------------------------------
 
     if state == "course_icon":
@@ -817,14 +1168,14 @@ async def handle_admin_input(update, context):
         context.user_data["state"] = "course_photo"
 
         await update.message.reply_text(
-            "3️⃣ अब course की cover photo भेजें।\n\n"
+            "3️⃣ Course की cover photo भेजें।\n\n"
             "Photo नहीं चाहिए तो `skip` भेजें।"
         )
 
         return
 
     # -----------------------------------------------------
-    # COURSE PHOTO SKIP
+    # PHOTO SKIP
     # -----------------------------------------------------
 
     if state == "course_photo":
@@ -859,20 +1210,47 @@ async def handle_admin_input(update, context):
             else value
         )
 
-        context.user_data["state"] = "course_permanent"
+        context.user_data["state"] = "demo_material"
 
         await update.message.reply_text(
-            "5️⃣ Permanent Link भेजें।\n\n"
-            "नहीं है तो `skip` भेजें।"
+            "5️⃣ *Demo Material Link* भेजें।\n\n"
+            "यानी जिस message से Demo Batch/Material शुरू हुआ है "
+            "उसका Telegram message link.\n\n"
+            "Example:\n"
+            "`https://t.me/channel/123`\n\n"
+            "नहीं है तो `skip`।",
+            parse_mode="Markdown",
         )
 
         return
 
     # -----------------------------------------------------
-    # PERMANENT LINK
+    # DEMO MATERIAL
     # -----------------------------------------------------
 
-    if state == "course_permanent":
+    if state == "demo_material":
+
+        context.user_data["course"]["demo_material_link"] = (
+            None
+            if value.lower() == "skip"
+            else value
+        )
+
+        context.user_data["state"] = "permanent_link"
+
+        await update.message.reply_text(
+            "6️⃣ *Permanent Link* भेजें।\n\n"
+            "नहीं है तो `skip`।",
+            parse_mode="Markdown",
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # PERMANENT
+    # -----------------------------------------------------
+
+    if state == "permanent_link":
 
         context.user_data["course"]["permanent_link"] = (
             None
@@ -880,13 +1258,38 @@ async def handle_admin_input(update, context):
             else value
         )
 
-        context.user_data["state"] = "course_channel"
+        context.user_data["state"] = "permanent_material"
 
         await update.message.reply_text(
-            "6️⃣ Telegram Channel Link भेजें।\n\n"
+            "7️⃣ *Permanent Material Link* भेजें।\n\n"
+            "जिस message से Permanent Batch/Material शुरू हुआ "
+            "उसका Telegram message link भेजें.\n\n"
+            "नहीं है तो `skip`।",
+            parse_mode="Markdown",
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # PERMANENT MATERIAL
+    # -----------------------------------------------------
+
+    if state == "permanent_material":
+
+        context.user_data["course"]["permanent_material_link"] = (
+            None
+            if value.lower() == "skip"
+            else value
+        )
+
+        context.user_data["state"] = "channel_link"
+
+        await update.message.reply_text(
+            "8️⃣ Course Channel का public link भेजें।\n\n"
             "Example:\n"
-            "https://t.me/yourchannel\n\n"
-            "नहीं है तो `skip` भेजें।"
+            "`https://t.me/yourchannel`\n\n"
+            "नहीं है तो `skip`।",
+            parse_mode="Markdown",
         )
 
         return
@@ -895,7 +1298,7 @@ async def handle_admin_input(update, context):
     # CHANNEL LINK
     # -----------------------------------------------------
 
-    if state == "course_channel":
+    if state == "channel_link":
 
         context.user_data["course"]["channel_link"] = (
             None
@@ -903,24 +1306,24 @@ async def handle_admin_input(update, context):
             else value
         )
 
-        await save_course(update, context)
+        await save_course(
+            update,
+            context,
+        )
 
         return
 
 
 # =========================================================
-# PHOTO HANDLER
+# COURSE PHOTO
 # =========================================================
 
-async def handle_course_photo(update, context):
-    user = update.effective_user
+async def course_photo(update, context):
 
-    if not is_admin(user.id):
+    if not is_admin(update.effective_user.id):
         return
 
-    state = context.user_data.get("state")
-
-    if state != "course_photo":
+    if context.user_data.get("state") != "course_photo":
         return
 
     if not update.message.photo:
@@ -928,13 +1331,16 @@ async def handle_course_photo(update, context):
 
     photo = update.message.photo[-1]
 
-    context.user_data["course"]["photo_file_id"] = photo.file_id
+    context.user_data["course"]["photo_file_id"] = (
+        photo.file_id
+    )
+
     context.user_data["state"] = "course_demo"
 
     await update.message.reply_text(
         "✅ Cover photo saved!\n\n"
-        "4️⃣ Demo Link भेजें।\n\n"
-        "नहीं है तो `skip` भेजें।"
+        "4️⃣ Demo Link भेजें।\n"
+        "नहीं है तो `skip`।"
     )
 
 
@@ -956,17 +1362,21 @@ async def save_course(update, context):
             icon,
             photo_file_id,
             demo_link,
+            demo_material_link,
             permanent_link,
+            permanent_material_link,
             channel_link
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             course.get("name"),
             course.get("icon") or "📕",
             course.get("photo_file_id"),
             course.get("demo_link"),
+            course.get("demo_material_link"),
             course.get("permanent_link"),
+            course.get("permanent_material_link"),
             course.get("channel_link"),
         ),
     )
@@ -975,22 +1385,24 @@ async def save_course(update, context):
     con.close()
 
     name = course.get("name")
-    icon = course.get("icon") or "📕"
 
     context.user_data.clear()
 
     await update.message.reply_text(
-        "✅ *COURSE ADDED SUCCESSFULLY!*\n\n"
-        f"{icon} {name}\n\n"
-        "📚 अब यह Course List में दिखाई देगा।\n"
-        "📢 Channel link दिया है तो Channels में भी दिखाई देगा।",
+        "✅ *COURSE SUCCESSFULLY ADDED!*\n\n"
+        f"📕 {name}\n\n"
+        "🎬 Demo Link: Saved\n"
+        "📚 Demo Material: Saved\n"
+        "🔐 Permanent Link: Saved\n"
+        "📚 Permanent Material: Saved\n"
+        "📢 Channel: Saved",
         reply_markup=admin_menu(),
         parse_mode="Markdown",
     )
 
 
 # =========================================================
-# MANAGE COURSES
+# ADMIN COURSES
 # =========================================================
 
 async def admin_courses(query):
@@ -1042,7 +1454,7 @@ async def admin_courses(query):
 
     buttons.append([
         InlineKeyboardButton(
-            "🔙 Admin Panel",
+            "🔙 Admin",
             callback_data="admin",
         )
     ])
@@ -1051,6 +1463,64 @@ async def admin_courses(query):
         "📚 *MANAGE COURSES*\n\n"
         "Course select करें:",
         reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="Markdown",
+    )
+
+
+# =========================================================
+# ADMIN CHANNELS
+# =========================================================
+
+async def admin_channels(query):
+
+    con = db()
+
+    rows = con.execute(
+        """
+        SELECT
+            chat_id,
+            title,
+            username,
+            latest_message_link,
+            first_material_link
+        FROM channels
+        ORDER BY title
+        """
+    ).fetchall()
+
+    con.close()
+
+    if not rows:
+
+        text = (
+            "📢 *DETECTED CHANNELS*\n\n"
+            "अभी कोई channel detect नहीं हुआ।"
+        )
+
+    else:
+
+        text = "📢 *DETECTED CHANNELS*\n\n"
+
+        for chat_id, title, username, latest, first in rows:
+
+            text += (
+                f"📢 *{title or 'Channel'}*\n"
+                f"🆔 `{chat_id}`\n"
+                f"👤 @{username or 'Private'}\n"
+                f"🔗 Latest: {'✅' if latest else '❌'}\n"
+                f"📚 Material: {'✅' if first else '❌'}\n\n"
+            )
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🔙 Admin",
+                    callback_data="admin",
+                )
+            ]
+        ]),
         parse_mode="Markdown",
     )
 
@@ -1067,9 +1537,10 @@ async def admin_course_detail(query, course_id):
         """
         SELECT
             name,
-            icon,
             demo_link,
+            demo_material_link,
             permanent_link,
+            permanent_material_link,
             channel_link
         FROM courses
         WHERE id = ?
@@ -1086,12 +1557,21 @@ async def admin_course_detail(query, course_id):
         )
         return
 
-    name, icon, demo, permanent, channel = row
+    (
+        name,
+        demo,
+        demo_material,
+        permanent,
+        permanent_material,
+        channel,
+    ) = row
 
     text = (
-        f"{icon or '📕'} *{name}*\n\n"
-        f"🎁 Demo: {'✅' if demo else '❌'}\n"
-        f"🔒 Permanent: {'✅' if permanent else '❌'}\n"
+        f"📚 *{name}*\n\n"
+        f"🎬 Demo: {'✅' if demo else '❌'}\n"
+        f"📚 Demo Material: {'✅' if demo_material else '❌'}\n"
+        f"🔐 Permanent: {'✅' if permanent else '❌'}\n"
+        f"📚 Permanent Material: {'✅' if permanent_material else '❌'}\n"
         f"📢 Channel: {'✅' if channel else '❌'}"
     )
 
@@ -1143,7 +1623,7 @@ async def delete_course(query, course_id):
 
 
 # =========================================================
-# SELLER LIST
+# SELLERS
 # =========================================================
 
 async def admin_sellers(query):
@@ -1160,16 +1640,13 @@ async def admin_sellers(query):
 
     con.close()
 
+    text = "👨‍💼 *SELLERS*\n\n"
+
     if not rows:
 
-        text = (
-            "👨‍💼 *SELLERS*\n\n"
-            "अभी कोई seller नहीं है।"
-        )
+        text += "अभी कोई seller नहीं है।"
 
     else:
-
-        text = "👨‍💼 *SELLERS*\n\n"
 
         for user_id, permission in rows:
 
@@ -1231,12 +1708,7 @@ async def admin_report(query):
     ).fetchone()[0]
 
     channels = con.execute(
-        """
-        SELECT COUNT(*)
-        FROM courses
-        WHERE channel_link IS NOT NULL
-        AND channel_link != ''
-        """
+        "SELECT COUNT(*) FROM channels"
     ).fetchone()[0]
 
     con.close()
@@ -1246,7 +1718,7 @@ async def admin_report(query):
         f"👥 Users: `{users}`\n"
         f"📚 Courses: `{courses}`\n"
         f"👨‍💼 Sellers: `{sellers}`\n"
-        f"📢 Channels: `{channels}`",
+        f"📢 Detected Channels: `{channels}`",
         reply_markup=InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
@@ -1260,7 +1732,7 @@ async def admin_report(query):
 
 
 # =========================================================
-# CALLBACK HANDLER
+# CALLBACKS
 # =========================================================
 
 async def buttons(update, context):
@@ -1286,7 +1758,9 @@ async def buttons(update, context):
 
     # COURSES
     if data == "courses":
+
         await show_courses(query)
+
         return
 
     # COURSE
@@ -1298,7 +1772,6 @@ async def buttons(update, context):
 
         await show_course(
             query,
-            context,
             course_id,
         )
 
@@ -1311,16 +1784,16 @@ async def buttons(update, context):
 
         return
 
-    # CHANNEL
-    if data.startswith("channel_"):
+    # DETECTED CHANNEL
+    if data.startswith("detected_channel_"):
 
-        course_id = int(
-            data.split("_")[1]
+        chat_id = int(
+            data.split("_")[2]
         )
 
-        await open_channel(
+        await show_detected_channel(
             query,
-            course_id,
+            chat_id,
         )
 
         return
@@ -1351,7 +1824,7 @@ async def buttons(update, context):
 
         return
 
-    # MANAGE COURSES
+    # COURSES ADMIN
     if data == "admin_courses":
 
         if is_admin(user_id):
@@ -1359,7 +1832,7 @@ async def buttons(update, context):
 
         return
 
-    # ADMIN COURSE
+    # ADMIN COURSE DETAIL
     if data.startswith("admin_course_"):
 
         if is_admin(user_id):
@@ -1388,6 +1861,14 @@ async def buttons(update, context):
                 query,
                 course_id,
             )
+
+        return
+
+    # ADMIN CHANNELS
+    if data == "admin_channels":
+
+        if is_admin(user_id):
+            await admin_channels(query)
 
         return
 
@@ -1453,7 +1934,7 @@ async def cancel(update, context):
 async def error_handler(update, context):
 
     logger.error(
-        "Exception while handling update:",
+        "Exception:",
         exc_info=context.error,
     )
 
@@ -1466,12 +1947,12 @@ def main():
 
     if not TOKEN:
         raise ValueError(
-            "BOT_TOKEN environment variable is missing."
+            "BOT_TOKEN is missing"
         )
 
     if not ADMIN_IDS:
         raise ValueError(
-            "ADMIN_IDS environment variable is missing."
+            "ADMIN_IDS is missing"
         )
 
     init_db()
@@ -1505,26 +1986,42 @@ def main():
         )
     )
 
+    # Channel posts
+    app.add_handler(
+        MessageHandler(
+            filters.UpdateType.CHANNEL_POST,
+            channel_post,
+        )
+    )
+
+    # Bot added/admin in channel
+    app.add_handler(
+        MessageHandler(
+            filters.StatusUpdate.MY_CHAT_MEMBER,
+            my_chat_member,
+        )
+    )
+
     # Course photo
     app.add_handler(
         MessageHandler(
             filters.PHOTO,
-            handle_course_photo,
+            course_photo,
         )
     )
 
-    # Admin text input
+    # Admin text
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            handle_admin_input,
+            admin_text,
         )
     )
 
     # Buttons
     app.add_handler(
         CallbackQueryHandler(
-            buttons
+            buttons,
         )
     )
 

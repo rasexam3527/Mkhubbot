@@ -51,6 +51,7 @@ except Exception:
 
 # Prevent duplicate manual report sends from double taps.
 REPORT_SEND_LOCK = Lock()
+DAILY_AUTO_LOCK = Lock()
 
 
 # ============================================================
@@ -1123,6 +1124,162 @@ async def demotime(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # DAILY REPORT
 # ============================================================
+def make_window_report(start_utc, end_utc, title, subtitle):
+    """
+    Detailed report for an arbitrary UTC time window.
+
+    Links are counted by link creation time.
+    Members are counted by actual Telegram join time.
+    """
+    with db() as c:
+        links = c.execute(
+            "SELECT * FROM links ORDER BY created_at"
+        ).fetchall()
+        members = c.execute(
+            "SELECT * FROM members ORDER BY joined_at"
+        ).fetchall()
+
+    start_iso = start_utc.isoformat()
+    end_iso = end_utc.isoformat()
+
+    links_in_window = [
+        r for r in links
+        if r["created_at"] and start_iso <= r["created_at"] < end_iso
+    ]
+
+    members_in_window = [
+        r for r in members
+        if r["joined_at"] and start_iso <= r["joined_at"] < end_iso
+    ]
+
+    demo_links = [r for r in links_in_window if r["link_type"] == "demo"]
+    perm_links = [r for r in links_in_window if r["link_type"] == "perm"]
+    demo_members = [r for r in members_in_window if r["link_type"] == "demo"]
+    perm_members = [r for r in members_in_window if r["link_type"] == "perm"]
+
+    def local_dt(value):
+        try:
+            return (
+                datetime.fromisoformat(value)
+                .astimezone(IST)
+                .strftime("%d/%m/%Y %H:%M:%S")
+            )
+        except Exception:
+            return str(value)
+
+    text = (
+        f"\U0001f4ca <b>{esc(title)}</b>\n"
+        f"\U0001f4c5 {esc(subtitle)}\n"
+        "\u2501" * 18 + "\n\n"
+        "\U0001f4cc <b>SUMMARY</b>\n"
+        f"\U0001f517 Links created: <b>{len(links_in_window)}</b>\n"
+        f"\U0001f393 Demo links: <b>{len(demo_links)}</b>\n"
+        f"\U0001f48e Permanent links: <b>{len(perm_links)}</b>\n"
+        f"\U0001f465 Members joined: <b>{len(members_in_window)}</b>\n"
+        f"\U0001f393 Demo members: <b>{len(demo_members)}</b>\n"
+        f"\U0001f48e Permanent members: <b>{len(perm_members)}</b>\n\n"
+    )
+
+    text += "\u2501" * 18 + "\n\n"
+    text += "\U0001f517 <b>LINK ACTIVITY</b>\n\n"
+
+    if links_in_window:
+        for r in links_in_window:
+            kind = (
+                "\U0001f393 DEMO"
+                if r["link_type"] == "demo"
+                else "\U0001f48e PERMANENT"
+            )
+            used = "\u2705 Used" if r["used"] else "\u23f3 Unused"
+            text += (
+                f"{kind}\n"
+                f"\U0001f464 Created by: <b>{esc(r['creator_name'])}</b>\n"
+                f"\U0001f4da Course: <b>{esc(r['course_name'])}</b>\n"
+                f"\U0001f552 Created: <b>{local_dt(r['created_at'])}</b>\n"
+                f"\U0001f4cc Status: <b>{used}</b>\n\n"
+            )
+    else:
+        text += "\u274c No access link was created in this period.\n\n"
+
+    text += "\u2501" * 18 + "\n\n"
+    text += "\U0001f465 <b>MEMBER JOIN ACTIVITY</b>\n\n"
+
+    if members_in_window:
+        for i, r in enumerate(members_in_window, 1):
+            kind = (
+                "\U0001f393 DEMO"
+                if r["link_type"] == "demo"
+                else "\U0001f48e PERMANENT"
+            )
+            status = (
+                "\U0001f6ab Removed"
+                if r["status"] == "removed"
+                else "\U0001f7e2 Active"
+            )
+            username = (
+                f"@{esc(r['username'])}"
+                if r["username"]
+                else "No username"
+            )
+
+            text += (
+                f"<b>#{i}</b> {kind}\n"
+                f"\U0001f464 Member: <b>{esc(r['full_name'])}</b>\n"
+                f"\U0001f517 Username: <b>{username}</b>\n"
+                f"\U0001f194 ID: <code>{r['user_id']}</code>\n"
+                f"\U0001f464 Added by: <b>{esc(r['creator_name'])}</b>\n"
+                f"\U0001f4da Course: <b>{esc(r['course_name'])}</b>\n"
+                f"\U0001f552 Joined: <b>{local_dt(r['joined_at'])}</b>\n"
+                f"\U0001f4cc Status: <b>{status}</b>\n\n"
+            )
+    else:
+        text += "\u274c No member joined in this period.\n\n"
+
+    text += "\u2501" * 18 + "\n"
+    text += (
+        f"\U0001f4ca Total: <b>{len(members_in_window)}</b> members | "
+        f"\U0001f393 Demo: <b>{len(demo_members)}</b> | "
+        f"\U0001f48e Permanent: <b>{len(perm_members)}</b>"
+    )
+
+    return text
+
+
+def make_last_hour_report():
+    end = now()
+    start = end - timedelta(hours=1)
+    local_start = start.astimezone(IST).strftime("%d/%m/%Y %H:%M:%S")
+    local_end = end.astimezone(IST).strftime("%d/%m/%Y %H:%M:%S")
+
+    return make_window_report(
+        start,
+        end,
+        "\U0001f553 LAST 1 HOUR REPORT",
+        f"{local_start} \u2192 {local_end} IST",
+    )
+
+
+def make_previous_day_report():
+    today_ist = ist_now().date()
+    previous_day = today_ist - timedelta(days=1)
+
+    start_local = datetime(
+        previous_day.year,
+        previous_day.month,
+        previous_day.day,
+        0, 0, 0,
+        tzinfo=IST,
+    )
+    end_local = start_local + timedelta(days=1)
+
+    return make_window_report(
+        start_local.astimezone(timezone.utc),
+        end_local.astimezone(timezone.utc),
+        "\U0001f4ca 24 HOURS / DAILY REPORT",
+        f"{previous_day.isoformat()} 00:00:00 \u2192 23:59:59 IST",
+    )
+
+
 def make_report(date_string=None):
     from collections import defaultdict
     """
@@ -1399,20 +1556,39 @@ def make_report(date_string=None):
 
 
 def split_report_text(text, limit=3900):
+    """Split a report into Telegram-safe chunks without duplicating data."""
+    if not text:
+        return ["No activity recorded."]
+
     if len(text) <= limit:
         return [text]
 
     chunks = []
-    current = ""
+    current = []
 
     for line in text.splitlines(keepends=True):
-        if current and len(current) + len(line) > limit:
-            chunks.append(current)
-            current = ""
-        current += line
+        # A single extremely long line is split safely.
+        if len(line) > limit:
+            if current:
+                chunks.append("".join(current))
+                current = []
+
+            while len(line) > limit:
+                chunks.append(line[:limit])
+                line = line[limit:]
+
+            if line:
+                current.append(line)
+            continue
+
+        if current and sum(len(x) for x in current) + len(line) > limit:
+            chunks.append("".join(current))
+            current = []
+
+        current.append(line)
 
     if current:
-        chunks.append(current)
+        chunks.append("".join(current))
 
     return chunks
 
@@ -1421,17 +1597,67 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not owner(update.effective_user.id):
         return
 
-    d = (ist_now().date() - timedelta(days=1)).isoformat()
-    for chunk in split_report_text(make_report(d)):
+    if REPORT_SEND_LOCK.locked():
         await update.message.reply_text(
-            chunk,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
+            "\u23f3 Another report is already being generated."
         )
+        return
+
+    async with REPORT_SEND_LOCK:
+        try:
+            for chunk in split_report_text(make_previous_day_report()):
+                await update.message.reply_text(
+                    chunk,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+        except Exception as e:
+            log.exception("Daily report command failed")
+            await update.message.reply_text(
+                "\u274c Daily report error:\n" + str(e)
+            )
 
 
 async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manual previous-day report. Double taps are safely ignored."""
+    """Open the report selector instead of immediately spamming messages."""
+    q = update.callback_query
+
+    if not owner(q.from_user.id):
+        await q.answer("\u274c Owner only", show_alert=True)
+        return
+
+    await q.answer()
+
+    await edit(
+        q,
+        "\U0001f4ca <b>REPORT CENTER</b>\n\n"
+        "Neeche se report type select karo:\n\n"
+        "\U0001f553 <b>1 Hour</b> = last 60 minutes ki complete activity\n"
+        "\U0001f4c5 <b>24 Hours</b> = kal ka complete 00:00\u219223:59 IST report\n\n"
+        "Har entry me member, seller/admin, course, type aur exact time hoga.",
+        InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "\U0001f553 Last 1 Hour",
+                    callback_data="report:1h"
+                ),
+                InlineKeyboardButton(
+                    "\U0001f4c5 Last 24 Hours",
+                    callback_data="report:24h"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "\u2b05\ufe0f Owner Panel",
+                    callback_data="owner"
+                )
+            ],
+        ]),
+    )
+
+
+async def report_window_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send the selected 1-hour or 24-hour report exactly once per click."""
     q = update.callback_query
 
     if not owner(q.from_user.id):
@@ -1440,78 +1666,77 @@ async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if REPORT_SEND_LOCK.locked():
         await q.answer(
-            "\u23f3 Report already being generated...",
+            "\u23f3 Another report is already being generated...",
             show_alert=True
         )
         return
 
-    await q.answer("\U0001f4ca Report generating...")
+    kind = q.data.split(":")[-1]
+    await q.answer("\U0001f4ca Generating report...")
 
     async with REPORT_SEND_LOCK:
         try:
-            report_date = (
-                ist_now().date() - timedelta(days=1)
-            ).isoformat()
+            if kind == "1h":
+                report_text = make_last_hour_report()
+                back_data = "report"
+                title = "\U0001f553 Last 1 Hour Report"
+            else:
+                report_text = make_previous_day_report()
+                back_data = "report"
+                title = "\U0001f4c5 24 Hours / Daily Report"
 
-            chunks = split_report_text(make_report(report_date))
+            chunks = split_report_text(report_text)
 
+            # IMPORTANT: send each chunk exactly once.
             for chunk in chunks:
-                try:
-                    await context.bot.send_message(
-                        chat_id=OWNER_ID,
-                        text=chunk,
-                        parse_mode=ParseMode.HTML,
-                        disable_web_page_preview=True,
-                    )
-                except Exception as html_error:
-                    log.warning(
-                        "Manual HTML report send failed; "
-                        "sending plain text: %s",
-                        html_error,
-                    )
-                    await context.bot.send_message(
-                        chat_id=OWNER_ID,
-                        text=re.sub(r"<[^>]+>", "", chunk),
-                        disable_web_page_preview=True,
-                    )
+                await context.bot.send_message(
+                    chat_id=OWNER_ID,
+                    text=chunk,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
 
             await edit(
                 q,
-                "\u2705 <b>Daily Report Sent</b>\n\n"
-                f"\U0001f4c5 Date: <b>{esc(report_date)}</b> (IST)\n"
-                f"\U0001f4e8 Messages: <b>{len(chunks)}</b>\n\n"
-                "\u2705 Complete report sent above.",
+                f"\u2705 <b>{title}</b> sent.\n\n"
+                f"\U0001f4e8 Messages: <b>{len(chunks)}</b>",
                 InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "\U0001f4ca Report Center",
+                            callback_data=back_data
+                        )
+                    ],
                     [
                         InlineKeyboardButton(
                             "\u2b05\ufe0f Owner Panel",
                             callback_data="owner"
                         )
                     ],
-                    [
-                        InlineKeyboardButton(
-                            "\U0001f4ca Send Again",
-                            callback_data="report"
-                        )
-                    ],
                 ]),
             )
 
         except Exception as e:
-            log.exception("Manual daily report failed")
+            log.exception("Report window failed")
 
             try:
-                await q.edit_message_text(
-                    "\u274c <b>Daily Report Error</b>\n\n"
+                await edit(
+                    q,
+                    "\u274c <b>Report Error</b>\n\n"
                     f"<code>{esc(str(e))}</code>",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup([
+                    InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton(
+                                "\U0001f4ca Report Center",
+                                callback_data="report"
+                            )
+                        ],
                         [
                             InlineKeyboardButton(
                                 "\u2b05\ufe0f Owner Panel",
                                 callback_data="owner"
                             )
-                        ]
+                        ],
                     ]),
                 )
             except Exception:
@@ -1520,19 +1745,18 @@ async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def daily_job(context: ContextTypes.DEFAULT_TYPE):
     """
-    Send the previous completed IST day exactly once.
+    Automatic completed-day report.
 
-    The report date is claimed in SQLite BEFORE messages are sent.
-    This is important because long reports can take longer than the
-    one-minute scheduler interval, and multiple bot instances can also
-    run at the same time.
-
-    If sending fails, the claim is removed so the next scheduler run
-    can retry.
+    The scheduler calls this only once per day. SQLite also keeps a
+    unique report_date claim, so the same date cannot be sent twice
+    when the same DB is shared.
     """
+    if DAILY_AUTO_LOCK.locked():
+        return
+
     local = ist_now()
 
-    # Previous day becomes eligible after 00:05 IST.
+    # Do not send an incomplete current day.
     if local.hour == 0 and local.minute < 5:
         return
 
@@ -1542,57 +1766,43 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
         log.error("OWNER_ID missing; daily report skipped")
         return
 
-    # Atomic claim. SQLite UNIQUE PRIMARY KEY ensures only one runner
-    # can claim this report date.
-    with db() as c:
-        try:
-            c.execute(
-                "INSERT INTO reports(report_date,sent_at) VALUES(?,?)",
-                (report_date, iso(now())),
-            )
-            c.commit()
-        except sqlite3.IntegrityError:
-            # Already sent/claimed by another run or another bot process.
-            return
-
-    try:
-        report_text = make_report(report_date)
-        chunks = split_report_text(report_text)
-
-        for chunk in chunks:
+    async with DAILY_AUTO_LOCK:
+        # Atomic DB claim.
+        with db() as c:
             try:
+                c.execute(
+                    "INSERT INTO reports(report_date,sent_at) VALUES(?,?)",
+                    (report_date, iso(now())),
+                )
+                c.commit()
+            except sqlite3.IntegrityError:
+                return
+
+        try:
+            report_text = make_previous_day_report()
+            chunks = split_report_text(report_text)
+
+            for chunk in chunks:
                 await context.bot.send_message(
                     chat_id=OWNER_ID,
                     text=chunk,
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
                 )
-            except Exception as html_error:
-                log.warning(
-                    "Automatic HTML report send failed; "
-                    "sending plain text: %s",
-                    html_error,
-                )
-                await context.bot.send_message(
-                    chat_id=OWNER_ID,
-                    text=re.sub(r"<[^>]+>", "", chunk),
-                    disable_web_page_preview=True,
-                )
 
-    except Exception:
-        log.exception(
-            "Automatic daily report failed for %s; releasing claim",
-            report_date,
-        )
-
-        # Allow a future scheduler run to retry.
-        with db() as c:
-            c.execute(
-                "DELETE FROM reports WHERE report_date=?",
-                (report_date,),
+        except Exception:
+            log.exception(
+                "Automatic daily report failed for %s",
+                report_date,
             )
-            c.commit()
-        return
+
+            # Failed send = allow a later retry.
+            with db() as c:
+                c.execute(
+                    "DELETE FROM reports WHERE report_date=?",
+                    (report_date,),
+                )
+                c.commit()
 
 
 # ============================================================
@@ -1709,6 +1919,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_time(update, context)
     elif d == "report":
         await report_button(update, context)
+    elif d in ("report:1h", "report:24h"):
+        await report_window_button(update, context)
     elif d == "addadmin":
         await add_admin_start(update, context)
     else:
@@ -1773,14 +1985,16 @@ def main():
         first=10,
     )
 
-    # Daily report: every minute.
-    app.job_queue.run_repeating(
+    # Daily report: ONE scheduled run per day at 00:06 IST.
+    # SQLite + DAILY_AUTO_LOCK provide an additional duplicate guard.
+    from datetime import time as dt_time
+    app.job_queue.run_daily(
         daily_job,
-        interval=60,
-        first=20,
+        time=dt_time(hour=0, minute=6, tzinfo=IST),
+        name="daily_completed_report",
     )
 
-    log.info("Bot started. Auto channel detection = ON.")
+    log.info("Bot started. Auto channel detection = ON. Daily report scheduler = once/day at 00:06 IST.")
     app.run_polling(
         allowed_updates=[
             "message",

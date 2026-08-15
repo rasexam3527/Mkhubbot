@@ -3,6 +3,7 @@ import html
 import logging
 import re
 import sqlite3
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 try:
@@ -1119,6 +1120,7 @@ async def demotime(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # DAILY REPORT
 # ============================================================
 def make_report(date_string=None):
+    from collections import defaultdict
     """
     Complete owner daily report for one completed IST calendar day.
 

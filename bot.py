@@ -416,8 +416,8 @@ def home_keyboard(uid=None):
     if owner(uid):
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("âï¸ OWNER PANEL", callback_data="owner"),
-                InlineKeyboardButton("ð DAILY REPORT", callback_data="reports"),
+                InlineKeyboardButton("\u2699\ufe0f OWNER PANEL", callback_data="owner"),
+                InlineKeyboardButton("\U0001f4ca DAILY REPORT", callback_data="reports"),
             ]
         ])
 
@@ -445,24 +445,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not admin(uid):
         msg = (
-            "â <b>ACCESS DENIED</b>\n\n"
-            "ð Aapko is bot ka access nahi diya gaya hai."
+            "\u274c <b>ACCESS DENIED</b>\n\n"
+            "\U0001f512 Aapko is bot ka access nahi diya gaya hai."
         )
         if update.message:
             await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
         elif update.callback_query:
-            await update.callback_query.answer("â Access Denied", show_alert=True)
+            await update.callback_query.answer("\u274c Access Denied", show_alert=True)
         return
 
     text = (
-        "ð¸ <b>HELLO SELLER FAMILY, KESE HO?</b>\n\n"
-        "â¨ <b>I AM WIZARD</b> ð¸ð\n\n"
-        "ââââââââââââââââââ\n\n"
-        "ð <b>COURSE SEARCH</b>\n\n"
+        "\U0001f338 <b>HELLO SELLER FAMILY, KESE HO?</b>\n\n"
+        "\u2728 <b>I AM WIZARD</b> \U0001f338\U0001f495\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        "\U0001f50e <b>COURSE SEARCH</b>\n\n"
         "<b>Telegram ke kisi bhi chat me likho:</b>\n"
         "<code>@YourBotUsername course-name</code>\n\n"
-        "ð <b>Search result me course select karo.</b>\n\n"
-        "ð <i>Fast â¢ Clean â¢ Secure Access System</i>"
+        "\U0001f449 <b>Search result me course select karo.</b>\n\n"
+        "\U0001f48e <i>Fast \u2022 Clean \u2022 Secure Access System</i>"
     )
     keyboard = home_keyboard(uid)
 
@@ -868,27 +868,43 @@ async def create_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             )
 
-        if link_type == "demo":
-            text = (
-                "\U0001f393 <b>Access Granted: Demo Pass</b>\n\n"
-                "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-                f"\U0001f3e2 <b>Course:</b> {esc(course_row['name'])}\n\n"
-                "\U0001f4e5 <b>Join:</b>\n"
-                f"\U0001f517 <a href=\"{esc(invite.invite_link)}\">Open Demo Link</a>\n\n"
-                "\U0001f4cc <b>Important:</b>\n"
-                "\u26a0\ufe0f This joining link works only once.\n"
-                f"\u23f1 Member will be removed automatically after "
-                f"<b>{demo_minutes()} minutes</b>."
+        # Course material / view link.
+        # Public Telegram channels expose a stable URL via @username.
+        # Private channels do not have a generic public material URL, so
+        # the bot does not invent a fake link.
+        with db() as c:
+            ch_row = c.execute(
+                "SELECT username FROM channels WHERE chat_id=?",
+                (str(chat_id),)
+            ).fetchone()
+
+        channel_username = (ch_row["username"] or "").strip() if ch_row else ""
+        if channel_username:
+            channel_username = channel_username.lstrip("@")
+            material_url = f"https://t.me/{channel_username}"
+            material_line = (
+                f"\U0001f5a5 <b>\u0915\u094b\u0930\u094d\u0938 \u092e\u091f\u0947\u0930\u093f\u092f\u0932 \u092f\u0939\u093e\u0901 \u0926\u0947\u0916\u0947\u0902 (View Link):</b> "
+                f'<a href="{esc(material_url)}">Open Course Material</a>'
             )
         else:
-            text = (
-                "\U0001f48e <b>Access Granted: Permanent Pass</b>\n\n"
-                "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-                f"\U0001f3e2 <b>Course:</b> {esc(course_row['name'])}\n\n"
-                "\U0001f4e5 <b>Join:</b>\n"
-                f"\U0001f517 <a href=\"{esc(invite.invite_link)}\">Open Permanent Link</a>\n\n"
-                "\u26a0\ufe0f This joining link works only once."
+            material_line = (
+                "\U0001f5a5 <b>\u0915\u094b\u0930\u094d\u0938 \u092e\u091f\u0947\u0930\u093f\u092f\u0932 \u092f\u0939\u093e\u0901 \u0926\u0947\u0916\u0947\u0902 (View Link):</b> "
+                "Channel private \u0939\u0948 \u2014 public View Link available \u0928\u0939\u0940\u0902 \u0939\u0948\u0964"
             )
+
+        access_title = "Demo Pass" if link_type == "demo" else "Permanent Pass"
+        text = (
+            f"\U0001f393 <b>Access Granted: {access_title}</b>\n\n"
+            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+            f"\U0001f4da <b>Course:</b> {esc(course_row['name'])}\n\n"
+            "\U0001f4e5 <b>\u092f\u0939\u093e\u0901 \u0938\u0947 \u091c\u094d\u0935\u093e\u0907\u0928 \u0915\u0930\u0947\u0902 (Joining Link):</b>\n"
+            f'<a href="{esc(invite.invite_link)}">\U0001f517 Open Joining Link</a>\n\n'
+            f"{material_line}\n\n"
+            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+            "\U0001f4cc <b>\u092e\u0939\u0924\u094d\u0935\u092a\u0942\u0930\u094d\u0923 \u0928\u093f\u0930\u094d\u0926\u0947\u0936 (Important):</b>\n"
+            "\U0001f6ab \u092f\u0939 Joining Link \u0915\u0947\u0935\u0932 \u090f\u0915 \u092c\u093e\u0930 \u0915\u0947 \u0932\u093f\u090f \u0939\u0948\u0964 \u091c\u094d\u0935\u093e\u0907\u0928 \u0915\u0930\u0924\u0947 \u0939\u0940 \u092f\u0939 \u0924\u0941\u0930\u0902\u0924 Expire \u0939\u094b \u091c\u093e\u090f\u0917\u093e\u0964\n"
+            "\u2705 \u0915\u0943\u092a\u092f\u093e \u0906\u0917\u0947 \u0938\u0947 \u0915\u094d\u0932\u093e\u0938 \u0926\u0947\u0916\u0928\u0947 \u0915\u0947 \u0932\u093f\u090f \u0939\u092e\u0947\u0936\u093e \u090a\u092a\u0930 \u0926\u093f\u090f \u0917\u090f '\u0915\u094b\u0930\u094d\u0938 \u092e\u091f\u0947\u0930\u093f\u092f\u0932 \u0932\u093f\u0902\u0915' \u0915\u093e \u0939\u0940 \u0909\u092a\u092f\u094b\u0917 \u0915\u0930\u0947\u0902\u0964"
+        )
 
         await safe_edit(
             q,
@@ -1258,29 +1274,29 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
 
     if not owner(q.from_user.id):
-        await q.answer("â OWNER ONLY", show_alert=True)
+        await q.answer("\u274c OWNER ONLY", show_alert=True)
         return
 
     await q.answer()
 
     text = (
-        "ð <b>REPORT CENTER</b>\n\n"
-        "ð <b>LAST 1 HOUR</b>\n"
+        "\U0001f4ca <b>REPORT CENTER</b>\n\n"
+        "\U0001f550 <b>LAST 1 HOUR</b>\n"
         "<i>Pichhle 60 minutes ki complete activity.</i>\n\n"
-        "ð <b>LAST 24 HOURS</b>\n"
+        "\U0001f4c5 <b>LAST 24 HOURS</b>\n"
         "<i>Kal ke complete day ki detailed activity.</i>\n\n"
-        "ââââââââââââââââââ\n\n"
-        "ð¤ <b>Member</b> â¢ ð¨âð¼ <b>Seller</b> â¢ "
-        "ð <b>Course</b> â¢ ð <b>Access</b> â¢ ð <b>Exact Time</b>"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        "\U0001f464 <b>Member</b> \u2022 \U0001f468\u200d\U0001f4bc <b>Seller</b> \u2022 "
+        "\U0001f4da <b>Course</b> \u2022 \U0001f393 <b>Access</b> \u2022 \U0001f552 <b>Exact Time</b>"
     )
 
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("ð LAST 1 HOUR", callback_data="rpt:hour"),
-            InlineKeyboardButton("ð LAST 24 HOURS", callback_data="rpt:day"),
+            InlineKeyboardButton("\U0001f550 LAST 1 HOUR", callback_data="rpt:hour"),
+            InlineKeyboardButton("\U0001f4c5 LAST 24 HOURS", callback_data="rpt:day"),
         ],
         [
-            InlineKeyboardButton("âï¸ OWNER PANEL", callback_data="owner")
+            InlineKeyboardButton("\u2699\ufe0f OWNER PANEL", callback_data="owner")
         ]
     ])
 
@@ -1290,7 +1306,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def hourly_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not owner(q.from_user.id):
-        await q.answer("â OWNER ONLY", show_alert=True)
+        await q.answer("\u274c OWNER ONLY", show_alert=True)
         return
 
     start, end = one_hour_range()
@@ -1305,7 +1321,7 @@ async def hourly_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (key,)
         ).fetchone()
         if exists:
-            await q.answer("â¹ï¸ Is 1-hour report ko already generate kiya ja chuka hai.", show_alert=True)
+            await q.answer("\u2139\ufe0f Is 1-hour report ko already generate kiya ja chuka hai.", show_alert=True)
             return
         c.execute(
             "INSERT INTO reports_sent(report_key,message_id,sent_at) VALUES(?,?,?)",
@@ -1313,12 +1329,12 @@ async def hourly_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         c.commit()
 
-    await q.answer("Generating 1-hour reportâ¦")
+    await q.answer("Generating 1-hour report\u2026")
 
     try:
         text = build_report(
             start, end,
-            "ð ð LAST 1 HOUR REPORT",
+            "\U0001f4ca \U0001f550 LAST 1 HOUR REPORT",
             key
         )
         chunks = split_report(text)
@@ -1357,7 +1373,7 @@ async def hourly_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def daily_report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not owner(q.from_user.id):
-        await q.answer("â OWNER ONLY", show_alert=True)
+        await q.answer("\u274c OWNER ONLY", show_alert=True)
         return
 
     start, end, date_key = yesterday_range()
@@ -1369,7 +1385,7 @@ async def daily_report_button(update: Update, context: ContextTypes.DEFAULT_TYPE
             (key,)
         ).fetchone()
         if exists:
-            await q.answer("â¹ï¸ Is 24-hour report ko already generate kiya ja chuka hai.", show_alert=True)
+            await q.answer("\u2139\ufe0f Is 24-hour report ko already generate kiya ja chuka hai.", show_alert=True)
             return
         c.execute(
             "INSERT INTO reports_sent(report_key,message_id,sent_at) VALUES(?,?,?)",
@@ -1377,12 +1393,12 @@ async def daily_report_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         c.commit()
 
-    await q.answer("Generating 24-hour reportâ¦")
+    await q.answer("Generating 24-hour report\u2026")
 
     try:
         text = build_report(
             start, end,
-            "ð ð 24 HOURS / DAILY REPORT",
+            "\U0001f4ca \U0001f4c5 24 HOURS / DAILY REPORT",
             key
         )
         chunks = split_report(text)
@@ -1512,7 +1528,7 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
 
     if not owner(q.from_user.id):
-        await q.answer("â OWNER ONLY", show_alert=True)
+        await q.answer("\u274c OWNER ONLY", show_alert=True)
         return
 
     await q.answer()
@@ -1523,27 +1539,27 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         courses = c.execute("SELECT * FROM courses").fetchall()
 
     text = (
-        "ð <b>OWNER CONTROL PANEL</b>\n\n"
-        "ð <b>Dashboard</b>\n"
-        f"ð¥ Active Admins: <b>{len(admins)}</b>\n"
-        f"ð Courses: <b>{len(courses)}</b>\n"
-        f"ð¡ Detected Channels: <b>{len(channels)}</b>\n"
-        f"â±ï¸ Demo Duration: <b>{demo_minutes()} Minutes</b>\n\n"
-        "ââââââââââââââââââ\n\n"
-        "â¨ <i>Seller â¢ Access â¢ Channel â¢ Report Management</i>"
+        "\U0001f451 <b>OWNER CONTROL PANEL</b>\n\n"
+        "\U0001f4ca <b>Dashboard</b>\n"
+        f"\U0001f465 Active Admins: <b>{len(admins)}</b>\n"
+        f"\U0001f4da Courses: <b>{len(courses)}</b>\n"
+        f"\U0001f4e1 Detected Channels: <b>{len(channels)}</b>\n"
+        f"\u23f1\ufe0f Demo Duration: <b>{demo_minutes()} Minutes</b>\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        "\u2728 <i>Seller \u2022 Access \u2022 Channel \u2022 Report Management</i>"
     )
 
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("ð¥ VIEW ADMINS", callback_data="editadmins"),
-            InlineKeyboardButton("â ADD ADMIN", callback_data="addadmin"),
+            InlineKeyboardButton("\U0001f465 VIEW ADMINS", callback_data="editadmins"),
+            InlineKeyboardButton("\u2795 ADD ADMIN", callback_data="addadmin"),
         ],
         [
-            InlineKeyboardButton("â±ï¸ DEMO TIME", callback_data="showtime"),
-            InlineKeyboardButton("ð DAILY REPORT", callback_data="reports"),
+            InlineKeyboardButton("\u23f1\ufe0f DEMO TIME", callback_data="showtime"),
+            InlineKeyboardButton("\U0001f4ca DAILY REPORT", callback_data="reports"),
         ],
         [
-            InlineKeyboardButton("â©ï¸ BACK TO HOME", callback_data="home"),
+            InlineKeyboardButton("\u21a9\ufe0f BACK TO HOME", callback_data="home"),
         ],
     ])
 
@@ -1896,7 +1912,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         log.exception("callback error: %s", d)
         try:
-            await q.answer("â Temporary error. Bot logs check karo.", show_alert=True)
+            await q.answer("\u274c Temporary error. Bot logs check karo.", show_alert=True)
         except Exception:
             pass
 

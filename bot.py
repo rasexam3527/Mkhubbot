@@ -2,6 +2,11 @@ import os
 import html
 import logging
 from asyncio import Lock
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import re
 import sqlite3
 from collections import defaultdict
@@ -36,7 +41,7 @@ from telegram.ext import (
 # ============================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 OWNER_ID = int(os.getenv("OWNER_ID", "0") or 0)
-DB_PATH = os.getenv("DB_PATH", "bot.db")
+DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.db"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,6 +56,8 @@ except Exception:
 
 # Prevent duplicate manual report sends from double taps.
 REPORT_SEND_LOCK = Lock()
+PROCESS_LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".raj_course_bot.lock")
+PROCESS_LOCK_HANDLE = None
 DAILY_AUTO_LOCK = Lock()
 
 
@@ -1770,13 +1777,18 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
         # Atomic DB claim.
         with db() as c:
             try:
+                c.execute("BEGIN IMMEDIATE")
                 c.execute(
                     "INSERT INTO reports(report_date,sent_at) VALUES(?,?)",
                     (report_date, iso(now())),
                 )
                 c.commit()
             except sqlite3.IntegrityError:
+                c.rollback()
                 return
+            except Exception:
+                c.rollback()
+                raise
 
         try:
             report_text = make_previous_day_report()
@@ -1930,7 +1942,41 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # MAIN
 # ============================================================
+def acquire_single_instance():
+    """
+    Allow only one running copy on the same Linux machine.
+    This is critical because every running copy has its own JobQueue and
+    therefore can otherwise send the daily report multiple times.
+    """
+    global PROCESS_LOCK_HANDLE
+
+    if fcntl is None:
+        log.warning(
+            "fcntl unavailable; process-level singleton lock is disabled. "
+            "Make sure only ONE bot process/replica is running."
+        )
+        return
+
+    PROCESS_LOCK_HANDLE = open(PROCESS_LOCK_FILE, "w")
+    try:
+        fcntl.flock(
+            PROCESS_LOCK_HANDLE.fileno(),
+            fcntl.LOCK_EX | fcntl.LOCK_NB,
+        )
+    except BlockingIOError:
+        raise RuntimeError(
+            "ANOTHER RAJ COURSE BOT PROCESS IS ALREADY RUNNING. "
+            "Stop the old bot process/worker and run only one copy."
+        )
+
+    PROCESS_LOCK_HANDLE.write(str(os.getpid()))
+    PROCESS_LOCK_HANDLE.flush()
+
+
+
 def main():
+    acquire_single_instance()
+
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN missing.")
     if not OWNER_ID:
@@ -1994,7 +2040,11 @@ def main():
         name="daily_completed_report",
     )
 
-    log.info("Bot started. Auto channel detection = ON. Daily report scheduler = once/day at 00:06 IST.")
+    log.info(
+        "Bot started | single-instance lock=ON | DB=%s | "
+        "daily report=once/day at 00:06 IST | 1h/24h reports=ON",
+        DB_PATH,
+    )
     app.run_polling(
         allowed_updates=[
             "message",

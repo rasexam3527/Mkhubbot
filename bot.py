@@ -4,6 +4,8 @@ import html
 import logging
 import sqlite3
 import asyncio
+import socket
+import atexit
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -17,6 +19,133 @@ from telegram.ext import (
     ConversationHandler, MessageHandler, ContextTypes,
     InlineQueryHandler, ChatMemberHandler, filters
 )
+
+
+# ============================================================
+# SINGLE INSTANCE / DUPLICATE PROTECTION
+# ============================================================
+_INSTANCE_LOCK_HANDLE = None
+
+def acquire_single_instance_lock():
+    """
+    Allow only ONE copy of this bot on the same machine/container.
+
+    This prevents the exact symptom where one /start creates the same
+    screen many times or one report button opens REPORT CENTER repeatedly.
+    The lock is released automatically when the process exits.
+    """
+    global _INSTANCE_LOCK_HANDLE
+
+    lock_path = os.getenv(
+        "BOT_LOCK_PATH",
+        os.path.abspath("raj_course_bot.lock")
+    )
+
+    handle = open(lock_path, "a+", encoding="utf-8")
+
+    try:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                handle.close()
+                raise RuntimeError(
+                    "Another RAJ COURSE BOT process is already running. "
+                    "Stop the old bot process/workflow first."
+                )
+        else:
+            import fcntl
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.close()
+                raise RuntimeError(
+                    "Another RAJ COURSE BOT process is already running. "
+                    "Stop the old bot process/workflow first."
+                )
+
+        handle.seek(0)
+        handle.truncate()
+        handle.write(
+            f"pid={os.getpid()} host={socket.gethostname()}\n"
+        )
+        handle.flush()
+
+        _INSTANCE_LOCK_HANDLE = handle
+        atexit.register(release_single_instance_lock)
+
+    except Exception:
+        try:
+            handle.close()
+        except Exception:
+            pass
+        raise
+
+
+def release_single_instance_lock():
+    global _INSTANCE_LOCK_HANDLE
+    if _INSTANCE_LOCK_HANDLE is None:
+        return
+
+    try:
+        if os.name != "nt":
+            import fcntl
+            fcntl.flock(
+                _INSTANCE_LOCK_HANDLE.fileno(),
+                fcntl.LOCK_UN
+            )
+        else:
+            import msvcrt
+            _INSTANCE_LOCK_HANDLE.seek(0)
+            msvcrt.locking(
+                _INSTANCE_LOCK_HANDLE.fileno(),
+                msvcrt.LK_UNLCK,
+                1
+            )
+    except Exception:
+        pass
+
+    try:
+        _INSTANCE_LOCK_HANDLE.close()
+    except Exception:
+        pass
+
+    _INSTANCE_LOCK_HANDLE = None
+
+
+# In-process update/callback de-duplication.
+# Telegram normally delivers each update once, but this protects against
+# accidental repeated delivery while the process is alive.
+_SEEN_EVENTS = {}
+_SEEN_EVENT_LIMIT = 2000
+
+
+def claim_event(key, ttl=300):
+    current = asyncio.get_event_loop().time()
+
+    old_keys = [
+        k for k, timestamp in _SEEN_EVENTS.items()
+        if current - timestamp > ttl
+    ]
+    for k in old_keys:
+        _SEEN_EVENTS.pop(k, None)
+
+    if key in _SEEN_EVENTS:
+        return False
+
+    _SEEN_EVENTS[key] = current
+
+    if len(_SEEN_EVENTS) > _SEEN_EVENT_LIMIT:
+        oldest = sorted(
+            _SEEN_EVENTS.items(),
+            key=lambda item: item[1]
+        )[:200]
+        for k, _ in oldest:
+            _SEEN_EVENTS.pop(k, None)
+
+    return True
 
 # ============================================================
 # CONFIG
@@ -307,6 +436,8 @@ def home_keyboard():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    if update.update_id is not None and not claim_event(f"start:{update.update_id}"):
+        return
 
     if not admin(uid):
         msg = (
@@ -1725,6 +1856,8 @@ async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     d = q.data or ""
+    if q.id and not claim_event(f"callback:{q.id}"):
+        return
 
     if d == "home":
         await start(update, context)
@@ -1771,7 +1904,14 @@ def main():
     if not OWNER_ID:
         raise RuntimeError("OWNER_ID missing.")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    acquire_single_instance_lock()
+    log.info(
+        "Single-instance lock acquired | pid=%s | host=%s",
+        os.getpid(),
+        socket.gethostname()
+    )
+
+    app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).build()
 
     app.add_handler(
         ConversationHandler(
@@ -1839,11 +1979,11 @@ def main():
         first=20
     )
 
-    log.info("RAJ COURSE BOT started. DB=%s", DB_PATH)
+    log.info("RAJ COURSE BOT started ONCE. DB=%s | Duplicate protection=ON", DB_PATH)
 
     app.run_polling(
         allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=False
+        drop_pending_updates=True
     )
 
 

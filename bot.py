@@ -140,6 +140,27 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS access_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            seller_uid INTEGER NOT NULL,
+            seller_name TEXT NOT NULL,
+            member_uid INTEGER NOT NULL,
+            member_name TEXT,
+            username TEXT,
+            channel_name TEXT NOT NULL,
+            link_type TEXT NOT NULL,
+            invite_link TEXT,
+            joined_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'joined'
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_access_events_member
+            ON access_events(member_uid);
+        CREATE INDEX IF NOT EXISTS idx_access_events_seller
+            ON access_events(seller_uid);
+        CREATE INDEX IF NOT EXISTS idx_access_events_invite
+            ON access_events(invite_link);
         """)
 
         cols = {
@@ -255,9 +276,9 @@ def rows_to_grid(items, cols=2):
 # HOME
 # =========================================================
 def home_keyboard(uid):
-    # Native Telegram inline-mode button: tapping it opens this bot's
-    # inline search in the current chat.
-    rows = [
+    # Public main menu. Owner/admin commands are intentionally hidden
+    # and are available only when typed directly.
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
                 "ð à¤®à¥à¤°à¥ à¤à¥à¤¡à¤¼à¥ à¤¹à¥à¤ à¤à¥à¤¨à¤²",
@@ -270,35 +291,18 @@ def home_keyboard(uid):
                 switch_inline_query_current_chat="",
             )
         ],
-    ]
-
-    if is_owner(uid):
-        rows.append([
-            InlineKeyboardButton(
-                f"{GEAR} Owner Panel",
-                callback_data="owner",
-            ),
-            InlineKeyboardButton(
-                f"{REPORT} Records",
-                callback_data="records",
-            ),
-        ])
-
-    return InlineKeyboardMarkup(rows)
+    ])
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # /start is public: every user gets the same premium main menu.
     if not update.effective_user:
-        return
-
-    uid = update.effective_user.id
-    if not is_admin(uid):
         return
 
     await update.effective_message.reply_text(
         "ð <b>à¤®à¥à¤¨ à¤®à¥à¤¨à¥à¤¯à¥ (Main Menu):</b>\n\n"
         "à¤à¤ªà¤¨à¥ à¤¡à¥à¤¶à¤¬à¥à¤°à¥à¤¡ à¤à¥ à¤à¤²à¤¾à¤¨à¥ à¤à¥ à¤²à¤¿à¤ à¤¨à¥à¤à¥ à¤¦à¤¿à¤ à¤à¤ à¤¬à¤à¤¨ à¤¦à¤¬à¤¾à¤à¤:",
-        reply_markup=home_keyboard(uid),
+        reply_markup=home_keyboard(update.effective_user.id),
         parse_mode=ParseMode.HTML,
     )
 
@@ -421,6 +425,172 @@ async def show_channel(update, context, channel_id):
     )
 
 
+async def resolve_seller_name(bot, uid):
+    try:
+        chat = await bot.get_chat(uid)
+        name = (getattr(chat, "full_name", None) or "").strip()
+        if not name:
+            first = (getattr(chat, "first_name", None) or "").strip()
+            last = (getattr(chat, "last_name", None) or "").strip()
+            name = " ".join(x for x in (first, last) if x)
+        if name:
+            return name
+        username = (getattr(chat, "username", None) or "").strip()
+        return f"@{username}" if username else f"Seller {uid}"
+    except Exception:
+        return f"Seller {uid}"
+
+
+# =========================================================
+# HIDDEN OWNER COMMANDS
+# /owner    -> owner panel
+# /addsudo ID -> demo only
+# /addsuper ID -> demo + permanent
+# /rmsudo ID -> remove access
+# These are deliberately not added to Telegram's command menu.
+# =========================================================
+def _owner_command_args(context):
+    args = context.args or []
+    if len(args) != 1:
+        return None
+    try:
+        uid = int(args[0].strip())
+        return uid if uid > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+async def owner_command(update, context):
+    if not update.effective_user or not is_owner(update.effective_user.id):
+        return
+
+    with db() as con:
+        admins = con.execute("SELECT uid FROM admins").fetchall()
+        batches = con.execute("SELECT id FROM batches").fetchall()
+        channels = con.execute(
+            "SELECT COUNT(*) n FROM channels"
+        ).fetchone()["n"]
+
+    kb = [
+        [
+            InlineKeyboardButton(
+                "â Add Category", callback_data="add_batch"
+            ),
+            InlineKeyboardButton(
+                "ð¥ Admins", callback_data="admins"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "ð User Report", callback_data="user_report"
+            ),
+            InlineKeyboardButton(
+                "â±ï¸ Demo Time", callback_data="demo_time"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "ð My Channels", callback_data="my_channels"
+            )
+        ],
+    ]
+
+    await update.effective_message.reply_text(
+        f"{CROWN} <b>OWNER PANEL</b>\n\n"
+        f"{USERS} Sellers: <b>{max(0, len(admins)-1)}</b>\n"
+        f"{FOLDER} Categories: <b>{len(batches)}</b>\n"
+        f"{CHANNEL} Channels: <b>{channels}</b>\n"
+        f"â±ï¸ Demo: <b>{get_demo_minutes()} min</b>\n\n"
+        "<i>Hidden access commands:</i>\n"
+        "<code>/addsudo USER_ID</code>\n"
+        "<code>/addsuper USER_ID</code>\n"
+        "<code>/rmsudo USER_ID</code>",
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def addsudo_command(update, context):
+    if not update.effective_user or not is_owner(update.effective_user.id):
+        return
+
+    uid = _owner_command_args(context)
+    if uid is None or uid == OWNER_ID:
+        return
+
+    seller_name = await resolve_seller_name(context.bot, uid)
+
+    with db() as con:
+        con.execute(
+            """
+            INSERT INTO admins(uid,name,permissions)
+            VALUES(?,?,?)
+            ON CONFLICT(uid) DO UPDATE SET
+                name=excluded.name,
+                permissions='demo'
+            """,
+            (uid, seller_name, "demo"),
+        )
+        con.commit()
+
+    await update.effective_message.reply_text(
+        f"â <b>DEMO ACCESS ACTIVE</b>\n\n"
+        f"Seller ID: <code>{uid}</code>\n"
+        "Access: <b>Demo only</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def addsuper_command(update, context):
+    if not update.effective_user or not is_owner(update.effective_user.id):
+        return
+
+    uid = _owner_command_args(context)
+    if uid is None or uid == OWNER_ID:
+        return
+
+    seller_name = await resolve_seller_name(context.bot, uid)
+
+    with db() as con:
+        con.execute(
+            """
+            INSERT INTO admins(uid,name,permissions)
+            VALUES(?,?,?)
+            ON CONFLICT(uid) DO UPDATE SET
+                name=excluded.name,
+                permissions='demo,perm'
+            """,
+            (uid, seller_name, "demo,perm"),
+        )
+        con.commit()
+
+    await update.effective_message.reply_text(
+        f"â <b>SUPER ACCESS ACTIVE</b>\n\n"
+        f"Seller ID: <code>{uid}</code>\n"
+        "Access: <b>Demo + Permanent</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def rmsudo_command(update, context):
+    if not update.effective_user or not is_owner(update.effective_user.id):
+        return
+
+    uid = _owner_command_args(context)
+    if uid is None or uid == OWNER_ID:
+        return
+
+    with db() as con:
+        con.execute("DELETE FROM admins WHERE uid=?", (uid,))
+        con.commit()
+
+    await update.effective_message.reply_text(
+        f"â <b>ACCESS REMOVED</b>\n\n"
+        f"Seller ID: <code>{uid}</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
 # =========================================================
 # OWNER
 # =========================================================
@@ -461,8 +631,11 @@ async def owner_panel(update, context):
         ],
         [
             InlineKeyboardButton(
+                "ð User Report", callback_data="user_report"
+            ),
+            InlineKeyboardButton(
                 "â±ï¸ Demo Time", callback_data="demo_time"
-            )
+            ),
         ],
         [
             InlineKeyboardButton(
@@ -1166,6 +1339,16 @@ async def handle_demo_member_join(update, context):
     invite_url = invite.invite_link
 
     with db() as con:
+        access_link = con.execute(
+            """
+            SELECT admin_uid, admin_name, channel_name, link_type
+            FROM records
+            WHERE link_url=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (invite_url,),
+        ).fetchone()
+
         row = con.execute(
             """
             SELECT *
@@ -1174,6 +1357,41 @@ async def handle_demo_member_join(update, context):
             """,
             (invite_url,),
         ).fetchone()
+
+        # Permanent invite: record the member and stop here.
+        if access_link and access_link["link_type"] == "PERM" and not row:
+            member = cm.new_chat_member.user
+            joined_at = datetime.now(timezone.utc).isoformat()
+
+            con.execute(
+                """
+                INSERT INTO access_events
+                (
+                    seller_uid,seller_name,member_uid,member_name,username,
+                    channel_name,link_type,invite_link,joined_at,status
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    access_link["admin_uid"],
+                    access_link["admin_name"],
+                    member.id,
+                    member.full_name or "Unknown",
+                    member.username,
+                    access_link["channel_name"],
+                    "PERM",
+                    invite_url,
+                    joined_at,
+                    "permanent_active",
+                ),
+            )
+            con.commit()
+
+            log.info(
+                "Permanent access recorded: seller=%s member=%s channel=%s",
+                access_link["admin_uid"], member.id, access_link["channel_name"]
+            )
+            return
 
         if not row:
             return
@@ -1189,6 +1407,8 @@ async def handle_demo_member_join(update, context):
             "UPDATE demo_links SET used=1 WHERE invite_link=?",
             (invite_url,),
         )
+
+        joined_at = datetime.now(timezone.utc).isoformat()
 
         con.execute(
             """
@@ -1207,9 +1427,44 @@ async def handle_demo_member_join(update, context):
                 expire.isoformat(),
                 member.full_name or "Unknown",
                 member.username,
-                datetime.now(timezone.utc).isoformat(),
+                joined_at,
             ),
         )
+
+        seller = con.execute(
+            """
+            SELECT admin_uid, admin_name, channel_name, link_type
+            FROM records
+            WHERE link_url=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (invite_url,),
+        ).fetchone()
+
+        if seller:
+            con.execute(
+                """
+                INSERT INTO access_events
+                (
+                    seller_uid,seller_name,member_uid,member_name,username,
+                    channel_name,link_type,invite_link,joined_at,status
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    seller["admin_uid"],
+                    seller["admin_name"],
+                    member.id,
+                    member.full_name or "Unknown",
+                    member.username,
+                    seller["channel_name"],
+                    seller["link_type"],
+                    invite_url,
+                    joined_at,
+                    "demo_active",
+                ),
+            )
+
         con.commit()
 
     # Demo invite is one-use.
@@ -1323,6 +1578,17 @@ async def auto_ban_unban(context):
                         """,
                         (row["id"],),
                     )
+                    con.execute(
+                        """
+                        UPDATE access_events
+                        SET status='demo_expired'
+                        WHERE member_uid=?
+                          AND channel_name=?
+                          AND link_type='DEMO'
+                          AND status='demo_active'
+                        """,
+                        (row["user_id"], row["channel_name"]),
+                    )
                     con.commit()
 
         except Exception:
@@ -1330,6 +1596,93 @@ async def auto_ban_unban(context):
                 "Demo expiry worker error for user=%s",
                 row["user_id"],
             )
+
+
+# =========================================================
+# USER REPORT
+# =========================================================
+async def user_report_callback(update, context):
+    q = update.callback_query
+    if not is_owner(q.from_user.id):
+        await q.answer("Owner only.", show_alert=True)
+        return
+
+    with db() as con:
+        events = con.execute(
+            """
+            SELECT seller_uid, seller_name, member_uid, member_name,
+                   username, channel_name, link_type, joined_at, status
+            FROM access_events
+            ORDER BY id DESC
+            LIMIT 60
+            """
+        ).fetchall()
+
+        generated = con.execute(
+            """
+            SELECT admin_uid, admin_name, channel_name, link_type,
+                   created_at
+            FROM records
+            ORDER BY id DESC
+            LIMIT 30
+            """
+        ).fetchall()
+
+    lines = [
+        "ð <b>USER ACCESS REPORT</b>",
+        "",
+        "<b>ð¤ Member â Seller Mapping</b>",
+    ]
+
+    if events:
+        for e in events:
+            username = f"@{e['username']}" if e["username"] else "No username"
+            lines.append(
+                f"\n{DEMO if e['link_type']=='DEMO' else PERM} "
+                f"<b>{escape(e['channel_name'])}</b> â "
+                f"{escape(e['link_type'])}\n"
+                f"ð¤ Member: <b>{escape(e['member_name'] or 'Unknown')}</b> "
+                f"({escape(username)})\n"
+                f"ð Member ID: <code>{e['member_uid']}</code>\n"
+                f"ð§âð¼ Seller: <b>{escape(e['seller_name'])}</b> "
+                f"(<code>{e['seller_uid']}</code>)\n"
+                f"ð Joined: {escape(e['joined_at'])}\n"
+                f"ð Status: <b>{escape(e['status'])}</b>"
+            )
+    else:
+        lines.append("No member access recorded yet.")
+
+    lines += ["", "<b>ð Generated Links</b>"]
+
+    for r in generated:
+        lines.append(
+            f"{DEMO if r['link_type']=='DEMO' else PERM} "
+            f"{escape(r['channel_name'])} â "
+            f"<b>{escape(r['link_type'])}</b>\n"
+            f"ð§âð¼ Seller: {escape(r['admin_name'])} "
+            f"(<code>{r['admin_uid']}</code>)\n"
+            f"ð {escape(r['created_at'])}"
+        )
+
+    report = "\n".join(lines)
+    if len(report) > 3900:
+        report = report[:3900] + "\n\nâ¦"
+
+    await q.answer()
+    await q.edit_message_text(
+        report,
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "ð Refresh", callback_data="user_report"
+                ),
+                InlineKeyboardButton(
+                    f"{BACK} Owner", callback_data="owner"
+                ),
+            ]
+        ]),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 # =========================================================
@@ -1716,6 +2069,10 @@ async def callback_router(update, context):
         await records_callback(update, context)
         return
 
+    if data == "user_report":
+        await user_report_callback(update, context)
+        return
+
     if data.startswith("batch_"):
         await show_batch(
             update, context, int(data.split("_", 1)[1])
@@ -1750,6 +2107,14 @@ async def callback_router(update, context):
 # =========================================================
 # MAIN
 # =========================================================
+async def post_init(application):
+    # Keep owner access commands hidden from Telegram's command menu.
+    try:
+        await application.bot.set_my_commands([])
+    except Exception:
+        log.exception("Could not clear Telegram command menu")
+
+
 def main():
     if not BOT_TOKEN:
         raise RuntimeError(
@@ -1762,7 +2127,12 @@ def main():
 
     init_db()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
     if not app.job_queue:
         raise RuntimeError(
@@ -1779,6 +2149,14 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start))
+
+    # Hidden owner-only commands. Do NOT add these to set_my_commands.
+    app.add_handler(CommandHandler("owner", owner_command))
+    app.add_handler(CommandHandler("addsudo", addsudo_command))
+    app.add_handler(CommandHandler("addsuper", addsuper_command))
+    app.add_handler(CommandHandler("rmsudo", rmsudo_command))
+
+    # Legacy owner/admin entry + demo time.
     app.add_handler(CommandHandler("admin", start))
     app.add_handler(CommandHandler("demotime", demotime_command))
 

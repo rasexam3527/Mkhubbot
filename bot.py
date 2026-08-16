@@ -43,26 +43,26 @@ logging.basicConfig(
 )
 log = logging.getLogger("course-bot")
 
-BOOK = "ð"
-FLAG = "ð©"
-NOTE = "ð"
-GRAD = "ð"
-SPARK = "â¨"
-CROWN = "ð"
-GEAR = "âï¸"
-PLUS = "â"
-CROSS = "â"
-BACK = "â¬ï¸"
-DEMO = "â¡"
-PERM = "ð"
-USERS = "ð¥"
-CHANNEL = "ð"
-FOLDER = "ð"
-CHECK = "â"
-REPORT = "ð"
-USER = "ð¤"
-EDIT = "âï¸"
-TRASH = "ðï¸"
+BOOK = "\U0001f4da"
+FLAG = "\U0001f6a9"
+NOTE = "\U0001f4dd"
+GRAD = "\U0001f393"
+SPARK = "\u2728"
+CROWN = "\U0001f451"
+GEAR = "\u2699\ufe0f"
+PLUS = "\u2795"
+CROSS = "\u274c"
+BACK = "\u2b05\ufe0f"
+DEMO = "\u26a1"
+PERM = "\U0001f48e"
+USERS = "\U0001f465"
+CHANNEL = "\U0001f4cc"
+FOLDER = "\U0001f4c2"
+CHECK = "\u2705"
+REPORT = "\U0001f4ca"
+USER = "\U0001f464"
+EDIT = "\u270f\ufe0f"
+TRASH = "\U0001f5d1\ufe0f"
 
 DEFAULT_BATCHES = [
     (BOOK, "Teaching Exam's"),
@@ -281,13 +281,13 @@ def home_keyboard(uid):
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
-                "ð à¤®à¥à¤°à¥ à¤à¥à¤¡à¤¼à¥ à¤¹à¥à¤ à¤à¥à¤¨à¤²",
+                "\U0001f4ca \u092e\u0947\u0930\u0947 \u091c\u0941\u0921\u093c\u0947 \u0939\u0941\u090f \u091a\u0948\u0928\u0932",
                 callback_data="my_channels",
             )
         ],
         [
             InlineKeyboardButton(
-                "ð à¤à¥à¤¨à¤² à¤¸à¤°à¥à¤ à¤à¤°à¥à¤",
+                "\U0001f50e \u091a\u0948\u0928\u0932 \u0938\u0930\u094d\u091a \u0915\u0930\u0947\u0902",
                 switch_inline_query_current_chat="",
             )
         ],
@@ -300,8 +300,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.effective_message.reply_text(
-        "ð <b>à¤®à¥à¤¨ à¤®à¥à¤¨à¥à¤¯à¥ (Main Menu):</b>\n\n"
-        "à¤à¤ªà¤¨à¥ à¤¡à¥à¤¶à¤¬à¥à¤°à¥à¤¡ à¤à¥ à¤à¤²à¤¾à¤¨à¥ à¤à¥ à¤²à¤¿à¤ à¤¨à¥à¤à¥ à¤¦à¤¿à¤ à¤à¤ à¤¬à¤à¤¨ à¤¦à¤¬à¤¾à¤à¤:",
+        "\U0001f44b <b>\u092e\u0947\u0928 \u092e\u0947\u0928\u094d\u092f\u0942 (Main Menu):</b>\n\n"
+        "\u0905\u092a\u0928\u0947 \u0921\u0948\u0936\u092c\u094b\u0930\u094d\u0921 \u0915\u094b \u091a\u0932\u093e\u0928\u0947 \u0915\u0947 \u0932\u093f\u090f \u0928\u0940\u091a\u0947 \u0926\u093f\u090f \u0917\u090f \u092c\u091f\u0928 \u0926\u092c\u093e\u090f\u0901:",
         reply_markup=home_keyboard(update.effective_user.id),
         parse_mode=ParseMode.HTML,
     )
@@ -474,23 +474,23 @@ async def owner_command(update, context):
     kb = [
         [
             InlineKeyboardButton(
-                "â Add Category", callback_data="add_batch"
+                "\u2795 Add Category", callback_data="add_batch"
             ),
             InlineKeyboardButton(
-                "ð¥ Admins", callback_data="admins"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "ð User Report", callback_data="user_report"
-            ),
-            InlineKeyboardButton(
-                "â±ï¸ Demo Time", callback_data="demo_time"
+                "\U0001f465 Admins", callback_data="admins"
             ),
         ],
         [
             InlineKeyboardButton(
-                "ð My Channels", callback_data="my_channels"
+                "\U0001f4ca User Report", callback_data="user_report"
+            ),
+            InlineKeyboardButton(
+                "\u23f1\ufe0f Demo Time", callback_data="demo_time"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "\U0001f4c2 My Channels", callback_data="my_channels"
             )
         ],
     ]
@@ -500,7 +500,7 @@ async def owner_command(update, context):
         f"{USERS} Sellers: <b>{max(0, len(admins)-1)}</b>\n"
         f"{FOLDER} Categories: <b>{len(batches)}</b>\n"
         f"{CHANNEL} Channels: <b>{channels}</b>\n"
-        f"â±ï¸ Demo: <b>{get_demo_minutes()} min</b>\n\n"
+        f"\u23f1\ufe0f Demo: <b>{get_demo_minutes()} min</b>\n\n"
         "<i>Hidden access commands:</i>\n"
         "<code>/addsudo USER_ID</code>\n"
         "<code>/addsuper USER_ID</code>\n"
@@ -534,7 +534,7 @@ async def addsudo_command(update, context):
         con.commit()
 
     await update.effective_message.reply_text(
-        f"â <b>DEMO ACCESS ACTIVE</b>\n\n"
+        f"\u2705 <b>DEMO ACCESS ACTIVE</b>\n\n"
         f"Seller ID: <code>{uid}</code>\n"
         "Access: <b>Demo only</b>",
         parse_mode=ParseMode.HTML,
@@ -565,7 +565,7 @@ async def addsuper_command(update, context):
         con.commit()
 
     await update.effective_message.reply_text(
-        f"â <b>SUPER ACCESS ACTIVE</b>\n\n"
+        f"\u2705 <b>SUPER ACCESS ACTIVE</b>\n\n"
         f"Seller ID: <code>{uid}</code>\n"
         "Access: <b>Demo + Permanent</b>",
         parse_mode=ParseMode.HTML,
@@ -585,7 +585,7 @@ async def rmsudo_command(update, context):
         con.commit()
 
     await update.effective_message.reply_text(
-        f"â <b>ACCESS REMOVED</b>\n\n"
+        f"\u2705 <b>ACCESS REMOVED</b>\n\n"
         f"Seller ID: <code>{uid}</code>",
         parse_mode=ParseMode.HTML,
     )
@@ -631,10 +631,10 @@ async def owner_panel(update, context):
         ],
         [
             InlineKeyboardButton(
-                "ð User Report", callback_data="user_report"
+                "\U0001f4ca User Report", callback_data="user_report"
             ),
             InlineKeyboardButton(
-                "â±ï¸ Demo Time", callback_data="demo_time"
+                "\u23f1\ufe0f Demo Time", callback_data="demo_time"
             ),
         ],
         [
@@ -650,7 +650,7 @@ async def owner_panel(update, context):
         f"{USERS} Admins: {len(admins)}\n"
         f"{FOLDER} Categories: {len(batches)}\n"
         f"{CHANNEL} Channels: {channels}\n"
-        f"â±ï¸ Demo: <b>{get_demo_minutes()} minutes</b>",
+        f"\u23f1\ufe0f Demo: <b>{get_demo_minutes()} minutes</b>",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode=ParseMode.HTML,
     )
@@ -695,7 +695,7 @@ async def demotime_command(update, context):
     args = context.args or []
     if not args:
         await update.effective_message.reply_text(
-            f"â±ï¸ Current Demo Time: {get_demo_minutes()} minutes\n"
+            f"\u23f1\ufe0f Current Demo Time: {get_demo_minutes()} minutes\n"
             "Change: /demotime 5"
         )
         return
@@ -706,7 +706,7 @@ async def demotime_command(update, context):
             raise ValueError
     except ValueError:
         await update.effective_message.reply_text(
-            "â Demo time 1-1440 minutes à¤¹à¥à¤¨à¤¾ à¤à¤¾à¤¹à¤¿à¤."
+            "\u274c Demo time 1-1440 minutes \u0939\u094b\u0928\u093e \u091a\u093e\u0939\u093f\u090f."
         )
         return
 
@@ -724,7 +724,7 @@ async def demotime_button(update, context):
 
     await q.answer()
     await q.edit_message_text(
-        f"â±ï¸ <b>DEMO TIME</b>\n\n"
+        f"\u23f1\ufe0f <b>DEMO TIME</b>\n\n"
         f"Current: <b>{get_demo_minutes()} minutes</b>\n\n"
         "Change:\n"
         "<code>/demotime 5</code>\n"
@@ -779,7 +779,7 @@ async def add_admin_save(update, context):
             permissions = "demo,perm"
         else:
             await update.message.reply_text(
-                "â Access demo à¤¯à¤¾ both à¤¹à¥à¤¨à¤¾ à¤à¤¾à¤¹à¤¿à¤."
+                "\u274c Access demo \u092f\u093e both \u0939\u094b\u0928\u093e \u091a\u093e\u0939\u093f\u090f."
             )
             return ADD_ADMIN
 
@@ -911,7 +911,7 @@ async def add_batch_start(update, context):
     await q.answer()
     await q.edit_message_text(
         f"{PLUS} <b>NEW CATEGORY</b>\n\n"
-        "Send: <code>ð | UPSC/IAS</code>",
+        "Send: <code>\U0001f4da | UPSC/IAS</code>",
         parse_mode=ParseMode.HTML,
     )
     return ADD_BATCH
@@ -978,7 +978,7 @@ async def edit_name_start(update, context):
     context.user_data["edit_mode"] = "name"
 
     await q.answer()
-    await q.edit_message_text("âï¸ Send new channel name:")
+    await q.edit_message_text("\u270f\ufe0f Send new channel name:")
     return ADD_CHANNEL
 
 
@@ -994,7 +994,7 @@ async def edit_id_start(update, context):
 
     await q.answer()
     await q.edit_message_text(
-        "âï¸ Send new channel ID:\n\n"
+        "\u270f\ufe0f Send new channel ID:\n\n"
         "<code>-1001234567890</code>",
         parse_mode=ParseMode.HTML,
     )
@@ -1270,18 +1270,18 @@ async def generate_link(update, context):
             text = (
                 f"{CHECK} <b>DEMO LINK</b>\n\n"
                 f"{BOOK} <b>{escape(ch['name'])}</b>\n"
-                f"â±ï¸ {get_demo_minutes()} minutes\n"
-                "ð« Expire à¤¹à¥à¤¨à¥ à¤ªà¤° Auto Remove + Auto Unban\n\n"
+                f"\u23f1\ufe0f {get_demo_minutes()} minutes\n"
+                "\U0001f6ab Expire \u0939\u094b\u0928\u0947 \u092a\u0930 Auto Remove + Auto Unban\n\n"
                 f'<a href="{escape(invite.invite_link)}">'
-                "ð Open Demo Link</a>"
+                "\U0001f517 Open Demo Link</a>"
             )
         else:
             text = (
                 f"{CHECK} <b>PERMANENT LINK</b>\n\n"
                 f"{BOOK} <b>{escape(ch['name'])}</b>\n"
-                "â¾ï¸ Reusable Permanent Invite\n\n"
+                "\u267e\ufe0f Reusable Permanent Invite\n\n"
                 f'<a href="{escape(invite.invite_link)}">'
-                "ð Open Permanent Link</a>"
+                "\U0001f517 Open Permanent Link</a>"
             )
 
         await q.answer()
@@ -1541,11 +1541,11 @@ async def auto_ban_unban(context):
 
     Expired demo:
         BAN/REMOVE
-             â
+             \u2193
           2 seconds
-             â
+             \u2193
           UNBAN
-             â
+             \u2193
     Permanent link can be used again.
     """
     now = datetime.now(timezone.utc)
@@ -1629,9 +1629,9 @@ async def user_report_callback(update, context):
         ).fetchall()
 
     lines = [
-        "ð <b>USER ACCESS REPORT</b>",
+        "\U0001f4ca <b>USER ACCESS REPORT</b>",
         "",
-        "<b>ð¤ Member â Seller Mapping</b>",
+        "<b>\U0001f464 Member \u2192 Seller Mapping</b>",
     ]
 
     if events:
@@ -1639,34 +1639,34 @@ async def user_report_callback(update, context):
             username = f"@{e['username']}" if e["username"] else "No username"
             lines.append(
                 f"\n{DEMO if e['link_type']=='DEMO' else PERM} "
-                f"<b>{escape(e['channel_name'])}</b> â "
+                f"<b>{escape(e['channel_name'])}</b> \u2014 "
                 f"{escape(e['link_type'])}\n"
-                f"ð¤ Member: <b>{escape(e['member_name'] or 'Unknown')}</b> "
+                f"\U0001f464 Member: <b>{escape(e['member_name'] or 'Unknown')}</b> "
                 f"({escape(username)})\n"
-                f"ð Member ID: <code>{e['member_uid']}</code>\n"
-                f"ð§âð¼ Seller: <b>{escape(e['seller_name'])}</b> "
+                f"\U0001f194 Member ID: <code>{e['member_uid']}</code>\n"
+                f"\U0001f9d1\u200d\U0001f4bc Seller: <b>{escape(e['seller_name'])}</b> "
                 f"(<code>{e['seller_uid']}</code>)\n"
-                f"ð Joined: {escape(e['joined_at'])}\n"
-                f"ð Status: <b>{escape(e['status'])}</b>"
+                f"\U0001f552 Joined: {escape(e['joined_at'])}\n"
+                f"\U0001f4cc Status: <b>{escape(e['status'])}</b>"
             )
     else:
         lines.append("No member access recorded yet.")
 
-    lines += ["", "<b>ð Generated Links</b>"]
+    lines += ["", "<b>\U0001f517 Generated Links</b>"]
 
     for r in generated:
         lines.append(
             f"{DEMO if r['link_type']=='DEMO' else PERM} "
-            f"{escape(r['channel_name'])} â "
+            f"{escape(r['channel_name'])} \u2014 "
             f"<b>{escape(r['link_type'])}</b>\n"
-            f"ð§âð¼ Seller: {escape(r['admin_name'])} "
+            f"\U0001f9d1\u200d\U0001f4bc Seller: {escape(r['admin_name'])} "
             f"(<code>{r['admin_uid']}</code>)\n"
-            f"ð {escape(r['created_at'])}"
+            f"\U0001f552 {escape(r['created_at'])}"
         )
 
     report = "\n".join(lines)
     if len(report) > 3900:
-        report = report[:3900] + "\n\nâ¦"
+        report = report[:3900] + "\n\n\u2026"
 
     await q.answer()
     await q.edit_message_text(
@@ -1674,7 +1674,7 @@ async def user_report_callback(update, context):
         reply_markup=InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
-                    "ð Refresh", callback_data="user_report"
+                    "\U0001f504 Refresh", callback_data="user_report"
                 ),
                 InlineKeyboardButton(
                     f"{BACK} Owner", callback_data="owner"
@@ -1740,7 +1740,7 @@ async def records_callback(update, context):
 
     text = "\n".join(lines)
     if len(text) > 3900:
-        text = text[:3900] + "\nâ¦"
+        text = text[:3900] + "\n\u2026"
 
     await q.answer()
     await q.edit_message_text(
@@ -1817,7 +1817,7 @@ async def inline_search(update, context):
                 description="Select Demo or Permanent",
                 input_message_content=InputTextMessageContent(
                     f"{r['emoji']} <b>{escape(r['name'])}</b>\n\n"
-                    "â¨ Select access type:",
+                    "\u2728 Select access type:",
                     parse_mode=ParseMode.HTML,
                 ),
                 reply_markup=InlineKeyboardMarkup(
@@ -1864,18 +1864,18 @@ async def inline_link_callback(update, context):
             text = (
                 f"{CHECK} <b>DEMO LINK</b>\n\n"
                 f"{BOOK} <b>{escape(ch['name'])}</b>\n"
-                f"â±ï¸ {get_demo_minutes()} minutes\n"
-                "ð« Expire â Auto Remove â Auto Unban\n\n"
+                f"\u23f1\ufe0f {get_demo_minutes()} minutes\n"
+                "\U0001f6ab Expire \u2192 Auto Remove \u2192 Auto Unban\n\n"
                 f'<a href="{escape(invite.invite_link)}">'
-                "ð Open Demo Link</a>"
+                "\U0001f517 Open Demo Link</a>"
             )
         else:
             text = (
                 f"{CHECK} <b>PERMANENT LINK</b>\n\n"
                 f"{BOOK} <b>{escape(ch['name'])}</b>\n"
-                "â¾ï¸ Reusable Permanent Invite\n\n"
+                "\u267e\ufe0f Reusable Permanent Invite\n\n"
                 f'<a href="{escape(invite.invite_link)}">'
-                "ð Open Permanent Link</a>"
+                "\U0001f517 Open Permanent Link</a>"
             )
 
         await q.answer()
@@ -1931,7 +1931,7 @@ async def inline_back_callback(update, context):
     await q.answer()
     await q.edit_message_text(
         f"{BOOK} <b>{escape(ch['name'])}</b>\n\n"
-        "â¨ Select access type:",
+        "\u2728 Select access type:",
         reply_markup=InlineKeyboardMarkup(
             rows_to_grid(buttons, 2)
         ),
@@ -2007,7 +2007,7 @@ async def my_channels_callback(update, context):
     kb = rows_to_grid(buttons, 1)
     kb.append([
         InlineKeyboardButton(
-            "ð à¤à¥à¤¨à¤² à¤¸à¤°à¥à¤ à¤à¤°à¥à¤",
+            "\U0001f50e \u091a\u0948\u0928\u0932 \u0938\u0930\u094d\u091a \u0915\u0930\u0947\u0902",
             switch_inline_query_current_chat="",
         )
     ])
@@ -2020,8 +2020,8 @@ async def my_channels_callback(update, context):
 
     await q.answer()
     await q.edit_message_text(
-        f"ð <b>à¤®à¥à¤°à¥ à¤à¥à¤¡à¤¼à¥ à¤¹à¥à¤ à¤à¥à¤¨à¤²</b>\n\n"
-        f"à¤à¥à¤² à¤à¥à¤¨à¤²: <b>{len(rows)}</b>",
+        f"\U0001f4ca <b>\u092e\u0947\u0930\u0947 \u091c\u0941\u0921\u093c\u0947 \u0939\u0941\u090f \u091a\u0948\u0928\u0932</b>\n\n"
+        f"\u0915\u0941\u0932 \u091a\u0948\u0928\u0932: <b>{len(rows)}</b>",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode=ParseMode.HTML,
     )
@@ -2042,8 +2042,8 @@ async def callback_router(update, context):
     if data == "home":
         await q.answer()
         await q.edit_message_text(
-            "ð <b>à¤®à¥à¤¨ à¤®à¥à¤¨à¥à¤¯à¥ (Main Menu):</b>\n\n"
-            "à¤à¤ªà¤¨à¥ à¤¡à¥à¤¶à¤¬à¥à¤°à¥à¤¡ à¤à¥ à¤à¤²à¤¾à¤¨à¥ à¤à¥ à¤²à¤¿à¤ à¤¨à¥à¤à¥ à¤¦à¤¿à¤ à¤à¤ à¤¬à¤à¤¨ à¤¦à¤¬à¤¾à¤à¤:",
+            "\U0001f44b <b>\u092e\u0947\u0928 \u092e\u0947\u0928\u094d\u092f\u0942 (Main Menu):</b>\n\n"
+            "\u0905\u092a\u0928\u0947 \u0921\u0948\u0936\u092c\u094b\u0930\u094d\u0921 \u0915\u094b \u091a\u0932\u093e\u0928\u0947 \u0915\u0947 \u0932\u093f\u090f \u0928\u0940\u091a\u0947 \u0926\u093f\u090f \u0917\u090f \u092c\u091f\u0928 \u0926\u092c\u093e\u090f\u0901:",
             reply_markup=home_keyboard(uid),
             parse_mode=ParseMode.HTML,
         )

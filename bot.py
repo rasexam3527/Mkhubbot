@@ -255,35 +255,49 @@ def rows_to_grid(items, cols=2):
 # HOME
 # =========================================================
 def home_keyboard(uid):
+    # Native Telegram inline-mode button: tapping it opens this bot's
+    # inline search in the current chat.
+    rows = [
+        [
+            InlineKeyboardButton(
+                "ð à¤®à¥à¤°à¥ à¤à¥à¤¡à¤¼à¥ à¤¹à¥à¤ à¤à¥à¤¨à¤²",
+                callback_data="my_channels",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "ð à¤à¥à¤¨à¤² à¤¸à¤°à¥à¤ à¤à¤°à¥à¤",
+                switch_inline_query_current_chat="",
+            )
+        ],
+    ]
+
     if is_owner(uid):
-        return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    f"{GEAR} Owner Panel", callback_data="owner"
-                ),
-                InlineKeyboardButton(
-                    f"{REPORT} Records", callback_data="records"
-                ),
-            ]
+        rows.append([
+            InlineKeyboardButton(
+                f"{GEAR} Owner Panel",
+                callback_data="owner",
+            ),
+            InlineKeyboardButton(
+                f"{REPORT} Records",
+                callback_data="records",
+            ),
         ])
-    return InlineKeyboardMarkup([])
+
+    return InlineKeyboardMarkup(rows)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user:
         return
+
     uid = update.effective_user.id
     if not is_admin(uid):
         return
 
     await update.effective_message.reply_text(
-        "Hello Seller Family ð\n\n"
-        "I AM WIZARD â¨\n\n"
-        "ð <b>Course Search</b>\n"
-        "Telegram ke kisi bhi chat me likho:\n"
-        "<code>@YourBotUsername course-name</code>\n\n"
-        "Search result me course select karo.\n"
-        "Uske baad Demo ya Permanent link generate karo.",
+        "ð <b>à¤®à¥à¤¨ à¤®à¥à¤¨à¥à¤¯à¥ (Main Menu):</b>\n\n"
+        "à¤à¤ªà¤¨à¥ à¤¡à¥à¤¶à¤¬à¥à¤°à¥à¤¡ à¤à¥ à¤à¤²à¤¾à¤¨à¥ à¤à¥ à¤²à¤¿à¤ à¤¨à¥à¤à¥ à¤¦à¤¿à¤ à¤à¤ à¤¬à¤à¤¨ à¤¦à¤¬à¤¾à¤à¤:",
         reply_markup=home_keyboard(uid),
         parse_mode=ParseMode.HTML,
     )
@@ -1609,6 +1623,58 @@ async def delete_channel(update, context):
 
 
 # =========================================================
+# MY CONNECTED CHANNELS
+# =========================================================
+async def my_channels_callback(update, context):
+    q = update.callback_query
+    uid = q.from_user.id
+
+    if not is_admin(uid):
+        await q.answer()
+        return
+
+    with db() as con:
+        rows = con.execute(
+            """
+            SELECT c.id, c.name, b.emoji
+            FROM channels c
+            JOIN batches b ON b.id = c.batch_id
+            ORDER BY b.id, c.name COLLATE NOCASE
+            """
+        ).fetchall()
+
+    buttons = [
+        InlineKeyboardButton(
+            f"{r['emoji']} {r['name']}",
+            callback_data=f"channel_{r['id']}",
+        )
+        for r in rows
+    ]
+
+    kb = rows_to_grid(buttons, 1)
+    kb.append([
+        InlineKeyboardButton(
+            "ð à¤à¥à¤¨à¤² à¤¸à¤°à¥à¤ à¤à¤°à¥à¤",
+            switch_inline_query_current_chat="",
+        )
+    ])
+    kb.append([
+        InlineKeyboardButton(
+            f"{BACK} Main Menu",
+            callback_data="home",
+        )
+    ])
+
+    await q.answer()
+    await q.edit_message_text(
+        f"ð <b>à¤®à¥à¤°à¥ à¤à¥à¤¡à¤¼à¥ à¤¹à¥à¤ à¤à¥à¤¨à¤²</b>\n\n"
+        f"à¤à¥à¤² à¤à¥à¤¨à¤²: <b>{len(rows)}</b>",
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+# =========================================================
 # CALLBACK ROUTER
 # =========================================================
 async def callback_router(update, context):
@@ -1623,12 +1689,8 @@ async def callback_router(update, context):
     if data == "home":
         await q.answer()
         await q.edit_message_text(
-            "Hello Seller Family ð\n\n"
-            "I AM WIZARD â¨\n\n"
-            "ð <b>Course Search</b>\n"
-            "Telegram ke kisi bhi chat me likho:\n"
-            "<code>@YourBotUsername course-name</code>\n\n"
-            "Search result me course select karo.",
+            "ð <b>à¤®à¥à¤¨ à¤®à¥à¤¨à¥à¤¯à¥ (Main Menu):</b>\n\n"
+            "à¤à¤ªà¤¨à¥ à¤¡à¥à¤¶à¤¬à¥à¤°à¥à¤¡ à¤à¥ à¤à¤²à¤¾à¤¨à¥ à¤à¥ à¤²à¤¿à¤ à¤¨à¥à¤à¥ à¤¦à¤¿à¤ à¤à¤ à¤¬à¤à¤¨ à¤¦à¤¬à¤¾à¤à¤:",
             reply_markup=home_keyboard(uid),
             parse_mode=ParseMode.HTML,
         )
@@ -1636,6 +1698,10 @@ async def callback_router(update, context):
 
     if data == "owner":
         await owner_panel(update, context)
+        return
+
+    if data == "my_channels":
+        await my_channels_callback(update, context)
         return
 
     if data == "admins":

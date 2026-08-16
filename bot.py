@@ -1812,16 +1812,17 @@ async def inline_search(update, context):
 
         results.append(
             InlineQueryResultArticle(
-                id=f"course_{r['id']}",
-                title=f"{r['emoji']} {r['name']}",
-                description="Select Demo or Permanent",
+                id=f"course_{row['id']}",
+                title=course_name,
+                description=f"ID: {row['tg_id']}",
                 input_message_content=InputTextMessageContent(
-                    f"{r['emoji']} <b>{escape(r['name'])}</b>\n\n"
-                    "\u2728 Select access type:",
+                    f"<b>{escape(course_name)}</b>\n"
+                    f"<code>ID: {escape(str(row['tg_id']))}</code>",
                     parse_mode=ParseMode.HTML,
                 ),
-                reply_markup=InlineKeyboardMarkup(
-                    rows_to_grid(buttons, 2)
+                reply_markup=inline_course_keyboard(
+                    uid,
+                    int(row["id"]),
                 ),
             )
         )
@@ -1989,7 +1990,7 @@ async def my_channels_callback(update, context):
     with db() as con:
         rows = con.execute(
             """
-            SELECT c.id, c.name, b.emoji
+            SELECT c.id, c.name, c.tg_id, b.emoji
             FROM channels c
             JOIN batches b ON b.id = c.batch_id
             ORDER BY b.id, c.name COLLATE NOCASE

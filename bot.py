@@ -4,6 +4,7 @@ import sqlite3
 import logging
 import asyncio
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from html import escape
 
 from telegram import (
@@ -140,6 +141,17 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS daily_report_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            report_date TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_daily_report_messages_date
+            ON daily_report_messages(report_date);
 
         CREATE TABLE IF NOT EXISTS access_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1170,6 +1182,19 @@ async def my_chat_member(update, context):
 # =========================================================
 # LINK CREATION
 # =========================================================
+def material_link_from_tg_id(tg_id):
+    """
+    Example: -1003617319442 -> https://t.me/c/3617319442/1
+    """
+    try:
+        raw = str(tg_id).strip()
+        if raw.startswith("-100") and raw[4:].isdigit():
+            return f"https://t.me/c/{raw[4:]}/1"
+    except Exception:
+        pass
+    return None
+
+
 async def create_link(channel_id, link_type, uid, bot):
     with db() as con:
         ch = con.execute(
@@ -1218,7 +1243,6 @@ async def create_link(channel_id, link_type, uid, bot):
 
         return invite, ch
 
-    # Permanent link is reusable.
     invite = await bot.create_chat_invite_link(
         chat_id=chat_id,
         name=f"perm_{now.strftime('%Y%m%d_%H%M%S')}",
@@ -1266,22 +1290,45 @@ async def generate_link(update, context):
             channel_id, link_type, uid, context.bot
         )
 
+        material_url = material_link_from_tg_id(ch["tg_id"])
+        material_line = (
+            f'📂 <a href="{escape(material_url)}">{escape(material_url)}</a>'
+            if material_url else
+            "📂 Material link unavailable for this channel."
+        )
+
         if link_type == "demo":
             text = (
-                f"{CHECK} <b>DEMO LINK</b>\n\n"
-                f"{BOOK} <b>{escape(ch['name'])}</b>\n"
-                f"\u23f1\ufe0f {get_demo_minutes()} minutes\n"
-                "\U0001f6ab Expire \u0939\u094b\u0928\u0947 \u092a\u0930 Auto Remove + Auto Unban\n\n"
-                f'<a href="{escape(invite.invite_link)}">'
-                "\U0001f517 Open Demo Link</a>"
+                "🎓 <b>Access Granted: Demo Pass</b> ⏳\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🏢 <b>चैनल / कोर्स का नाम:</b>\n"
+                f"↪ <b>{escape(ch['name'])}</b>\n\n"
+                "📥 <b>यहाँ से ज्वाइन करें (Joining Link):</b>\n"
+                f'🔗 <a href="{escape(invite.invite_link)}">{escape(invite.invite_link)}</a>\n\n'
+                "🖥️ <b>कोर्स मैटेरियल यहाँ देखें (View Link):</b>\n"
+                f"{material_line}\n\n"
+                "📌 <b>महत्वपूर्ण निर्देश (Important):</b>\n"
+                "❝\n"
+                "⚠️ यह जॉइनिंग लिंक केवल 1 बार काम करेगा।\n"
+                f"⏱️ सिस्टम आपको चैनल में जुड़ने के ठीक <b>{get_demo_minutes()} मिनट</b> बाद "
+                "ऑटोमेटिक बाहर (Kick) कर देगा।\n"
+                "❞"
             )
         else:
             text = (
-                f"{CHECK} <b>PERMANENT LINK</b>\n\n"
-                f"{BOOK} <b>{escape(ch['name'])}</b>\n"
-                "\u267e\ufe0f Reusable Permanent Invite\n\n"
-                f'<a href="{escape(invite.invite_link)}">'
-                "\U0001f517 Open Permanent Link</a>"
+                "💎 <b>Access Granted: Permanent Pass</b> 💎\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🏢 <b>चैनल / कोर्स का नाम:</b>\n"
+                f"↪ <b>{escape(ch['name'])}</b>\n\n"
+                "📥 <b>यहाँ से ज्वाइन करें (Joining Link):</b>\n"
+                f'🔗 <a href="{escape(invite.invite_link)}">{escape(invite.invite_link)}</a>\n\n'
+                "🖥️ <b>कोर्स मैटेरियल यहाँ देखें (View Link):</b>\n"
+                f"{material_line}\n\n"
+                "📌 <b>महत्वपूर्ण निर्देश (Important):</b>\n"
+                "❝\n"
+                "🚫 यह Permanent Joining Link केवल एक बार के लिए है। ज्वाइन करते ही यह तुरंत Expire हो जाएगा।\n"
+                "✅ कृपया आगे से क्लास देखने के लिए हमेशा ऊपर दिए गए <b>'कोर्स मैटेरियल लिंक'</b> का ही उपयोग करें।\n"
+                "❞"
             )
 
         await q.answer()
@@ -1358,7 +1405,6 @@ async def handle_demo_member_join(update, context):
             (invite_url,),
         ).fetchone()
 
-        # Permanent invite: record the member and stop here.
         if access_link and access_link["link_type"] == "PERM" and not row:
             member = cm.new_chat_member.user
             joined_at = datetime.now(timezone.utc).isoformat()
@@ -1402,7 +1448,6 @@ async def handle_demo_member_join(update, context):
             + timedelta(minutes=get_demo_minutes())
         )
 
-        # Mark the one-use demo link immediately.
         con.execute(
             "UPDATE demo_links SET used=1 WHERE invite_link=?",
             (invite_url,),
@@ -1467,7 +1512,6 @@ async def handle_demo_member_join(update, context):
 
         con.commit()
 
-    # Demo invite is one-use.
     try:
         await context.bot.revoke_chat_invite_link(
             chat_id=cm.chat.id,
@@ -1493,7 +1537,6 @@ async def expire_demo_user(context, row):
     user_id = int(row["user_id"])
 
     try:
-        # 1. Remove the member by banning.
         await context.bot.ban_chat_member(
             chat_id=chat_id,
             user_id=user_id,
@@ -1503,18 +1546,14 @@ async def expire_demo_user(context, row):
             user_id, chat_id
         )
     except Exception as exc:
-        # If already left, still try the unban below.
         log.warning(
             "Ban/remove failed user=%s chat=%s: %s",
             user_id, chat_id, exc
         )
 
-    # Give Telegram a moment to process the removal.
     await asyncio.sleep(2)
 
     try:
-        # 2. IMPORTANT: immediately UNBAN.
-        # This allows the same person to use a Permanent invite.
         await context.bot.unban_chat_member(
             chat_id=chat_id,
             user_id=user_id,
@@ -1527,7 +1566,6 @@ async def expire_demo_user(context, row):
         return True
 
     except Exception as exc:
-        # Keep it active so a later worker run can retry.
         log.warning(
             "AUTO-UNBAN failed user=%s chat=%s: %s",
             user_id, chat_id, exc
@@ -1536,18 +1574,6 @@ async def expire_demo_user(context, row):
 
 
 async def auto_ban_unban(context):
-    """
-    Runs every 10 seconds.
-
-    Expired demo:
-        BAN/REMOVE
-             \u2193
-          2 seconds
-             \u2193
-          UNBAN
-             \u2193
-    Permanent link can be used again.
-    """
     now = datetime.now(timezone.utc)
 
     with db() as con:
@@ -1599,13 +1625,344 @@ async def auto_ban_unban(context):
 
 
 # =========================================================
+# DAILY USER REPORT — 07:00 IST
+# =========================================================
+REPORT_TZ = ZoneInfo("Asia/Kolkata")
+REPORT_HOUR = 7
+REPORT_MINUTE = 0
+
+
+def report_period(now=None):
+    """
+    Report day is 07:00 IST -> next 07:00 IST.
+    At 07:00, send the complete report for the previous 24-hour period.
+    """
+    now = now or datetime.now(REPORT_TZ)
+    today_7 = now.replace(
+        hour=REPORT_HOUR,
+        minute=REPORT_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+    if now < today_7:
+        end = today_7
+        start = end - timedelta(days=1)
+    else:
+        start = today_7
+        end = today_7 + timedelta(days=1)
+    return start, end
+
+
+def utc_iso_from_aware(dt):
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def split_report_text(text, limit=3900):
+    parts = []
+    current = ""
+    for block in text.split("\n\n"):
+        candidate = block if not current else current + "\n\n" + block
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+
+        if current:
+            parts.append(current)
+            current = ""
+
+        while len(block) > limit:
+            cut = block.rfind("\n", 0, limit)
+            if cut < 100:
+                cut = limit
+            parts.append(block[:cut])
+            block = block[cut:].lstrip("\n")
+
+        current = block
+
+    if current:
+        parts.append(current)
+    return parts
+
+
+async def build_daily_report(start, end):
+    start_utc = utc_iso_from_aware(start)
+    end_utc = utc_iso_from_aware(end)
+
+    with db() as con:
+        events = con.execute(
+            """
+            SELECT seller_uid, seller_name, member_uid, member_name,
+                   username, channel_name, link_type, invite_link,
+                   joined_at, status
+            FROM access_events
+            WHERE joined_at >= ? AND joined_at < ?
+            ORDER BY id ASC
+            """,
+            (start_utc, end_utc),
+        ).fetchall()
+
+        generated = con.execute(
+            """
+            SELECT admin_uid, admin_name, channel_name, link_type,
+                   link_url, created_at
+            FROM records
+            WHERE created_at IS NOT NULL
+            ORDER BY id ASC
+            """
+        ).fetchall()
+
+    # records.created_at is stored in DD/MM/YYYY HH:MM, so filter it in Python
+    # without changing the existing database schema.
+    generated_today = []
+    for r in generated:
+        try:
+            # records.created_at is written from datetime.now(timezone.utc)
+            # but stored without a timezone suffix, so interpret it as UTC.
+            created = datetime.strptime(
+                r["created_at"], "%d/%m/%Y %H:%M"
+            ).replace(tzinfo=timezone.utc).astimezone(REPORT_TZ)
+            if start <= created < end:
+                generated_today.append(r)
+        except Exception:
+            continue
+
+    lines = [
+        "📊 <b>DAILY USER ACCESS REPORT</b>",
+        f"🗓️ <b>{start.strftime('%d/%m/%Y %H:%M')} → {end.strftime('%d/%m/%Y %H:%M')} IST</b>",
+        "",
+        "👤 <b>Member → Seller Mapping</b>",
+    ]
+
+    if events:
+        for e in events:
+            username = f"@{e['username']}" if e["username"] else "No username"
+            icon = DEMO if e["link_type"] == "DEMO" else PERM
+            joined = e["joined_at"]
+            try:
+                joined_dt = datetime.fromisoformat(joined).astimezone(REPORT_TZ)
+                joined = joined_dt.strftime("%d/%m/%Y %H:%M")
+            except Exception:
+                pass
+
+            lines.append(
+                f"{icon} <b>{escape(e['channel_name'])}</b> — "
+                f"<b>{escape(e['link_type'])}</b>\n"
+                f"👤 Member: <b>{escape(e['member_name'] or 'Unknown')}</b> "
+                f"({escape(username)})\n"
+                f"🆔 Member ID: <code>{e['member_uid']}</code>\n"
+                f"🧑‍💼 Seller: <b>{escape(e['seller_name'])}</b> "
+                f"(<code>{e['seller_uid']}</code>)\n"
+                f"🕐 Joined: {escape(joined)} IST\n"
+                f"📌 Status: <b>{escape(e['status'])}</b>"
+            )
+    else:
+        lines.append("No member access recorded in this report period.")
+
+    lines += ["", "🔗 <b>Generated Links</b>"]
+
+    if generated_today:
+        for r in generated_today:
+            icon = DEMO if r["link_type"] == "DEMO" else PERM
+            lines.append(
+                f"{icon} <b>{escape(r['channel_name'])}</b> — "
+                f"<b>{escape(r['link_type'])}</b>\n"
+                f"🧑‍💼 Seller: <b>{escape(r['admin_name'])}</b> "
+                f"(<code>{r['admin_uid']}</code>)\n"
+                f"🔗 <a href=\"{escape(r['link_url'])}\">{escape(r['link_url'])}</a>\n"
+                f"🕐 {escape(r['created_at'])} IST"
+            )
+    else:
+        lines.append("No links generated in this report period.")
+
+    lines += [
+        "",
+        f"📈 <b>Total member accesses:</b> {len(events)}",
+        f"🔗 <b>Total generated links:</b> {len(generated_today)}",
+    ]
+
+    return split_report_text("\n\n".join(lines))
+
+
+async def cleanup_old_daily_reports(context):
+    """
+    Remove the previous daily report messages once they are older than 24h.
+    Database access/event history is NOT deleted.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+
+    with db() as con:
+        old = con.execute(
+            """
+            SELECT id, chat_id, message_id
+            FROM daily_report_messages
+            WHERE created_at < ?
+            """,
+            (cutoff.isoformat(),),
+        ).fetchall()
+
+    for row in old:
+        try:
+            await context.bot.delete_message(
+                chat_id=row["chat_id"],
+                message_id=row["message_id"],
+            )
+        except Exception as exc:
+            log.info(
+                "Old daily report message already gone or cannot delete: %s",
+                exc,
+            )
+
+        with db() as con:
+            con.execute(
+                "DELETE FROM daily_report_messages WHERE id=?",
+                (row["id"],),
+            )
+            con.commit()
+
+
+async def send_daily_report(context):
+    """
+    Every day at exactly 07:00 IST:
+      1. delete reports older than 24h,
+      2. generate ONLY the previous 07:00→07:00 period,
+      3. send the complete report to the owner chat,
+      4. save its message IDs so they can be removed after 24h.
+
+    This prevents old days from stacking together in the owner dashboard.
+    """
+    if not OWNER_ID:
+        return
+
+    await cleanup_old_daily_reports(context)
+
+    now = datetime.now(REPORT_TZ)
+    end = now.replace(
+        hour=REPORT_HOUR,
+        minute=REPORT_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+    start = end - timedelta(days=1)
+
+    report_parts = await build_daily_report(start, end)
+
+    header = (
+        f"🕖 <b>07:00 DAILY REPORT</b>\n"
+        f"📅 {start.strftime('%d/%m/%Y')} → {end.strftime('%d/%m/%Y')}\n\n"
+    )
+
+    sent_ids = []
+    for index, part in enumerate(report_parts):
+        body = (header if index == 0 else "📊 <b>DAILY REPORT — CONTINUED</b>\n\n") + part
+        msg = await context.bot.send_message(
+            chat_id=OWNER_ID,
+            text=body,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        sent_ids.append(msg.message_id)
+
+    created_at = datetime.now(timezone.utc).isoformat()
+    report_date = end.strftime("%Y-%m-%d")
+
+    with db() as con:
+        for message_id in sent_ids:
+            con.execute(
+                """
+                INSERT INTO daily_report_messages
+                (chat_id,message_id,report_date,created_at)
+                VALUES(?,?,?,?)
+                """,
+                (OWNER_ID, message_id, report_date, created_at),
+            )
+        con.commit()
+
+    log.info(
+        "Daily 07:00 IST report sent: period=%s -> %s messages=%s",
+        start.isoformat(),
+        end.isoformat(),
+        len(sent_ids),
+    )
+
+
+# =========================================================
 # USER REPORT
 # =========================================================
+REPORT_RETENTION_HOURS = 24
+
+
+def cleanup_old_reports():
+    """
+    Report data is retained for exactly 24 hours.
+    This cleans both member-access mappings and generated-link
+    report entries. Core channel/admin/demo data is untouched.
+    """
+    cutoff = (
+        datetime.now(timezone.utc)
+        - timedelta(hours=REPORT_RETENTION_HOURS)
+    ).isoformat()
+
+    with db() as con:
+        deleted_events = con.execute(
+            "DELETE FROM access_events WHERE joined_at < ?",
+            (cutoff,),
+        ).rowcount
+
+        # records.created_at is stored as DD/MM/YYYY HH:MM, so parse
+        # it in Python instead of relying on SQLite string comparison.
+        old_record_ids = []
+        rows = con.execute(
+            "SELECT id, created_at FROM records"
+        ).fetchall()
+
+        for row in rows:
+            try:
+                created = datetime.strptime(
+                    row["created_at"], "%d/%m/%Y %H:%M"
+                ).replace(tzinfo=timezone.utc)
+
+                if created < datetime.now(timezone.utc) - timedelta(
+                    hours=REPORT_RETENTION_HOURS
+                ):
+                    old_record_ids.append(row["id"])
+            except (TypeError, ValueError):
+                # Leave malformed legacy records alone.
+                continue
+
+        deleted_records = 0
+        if old_record_ids:
+            placeholders = ",".join("?" for _ in old_record_ids)
+            deleted_records = con.execute(
+                f"DELETE FROM records WHERE id IN ({placeholders})",
+                old_record_ids,
+            ).rowcount
+
+        con.commit()
+
+    if deleted_events or deleted_records:
+        log.info(
+            "24h report cleanup: access_events=%s records=%s",
+            deleted_events,
+            deleted_records,
+        )
+
+
+async def report_cleanup_job(context):
+    try:
+        cleanup_old_reports()
+    except Exception:
+        log.exception("24h report cleanup failed")
+
+
 async def user_report_callback(update, context):
     q = update.callback_query
     if not is_owner(q.from_user.id):
         await q.answer("Owner only.", show_alert=True)
         return
+
+    # Clean before every report open/refresh so expired data disappears
+    # immediately even if the scheduled cleanup has not run yet.
+    cleanup_old_reports()
 
     with db() as con:
         events = con.execute(
@@ -1630,6 +1987,7 @@ async def user_report_callback(update, context):
 
     lines = [
         "\U0001f4ca <b>USER ACCESS REPORT</b>",
+        f"\u23f1\ufe0f <i>Last {REPORT_RETENTION_HOURS} hours only</i>",
         "",
         "<b>\U0001f464 Member \u2192 Seller Mapping</b>",
     ]
@@ -1650,19 +2008,22 @@ async def user_report_callback(update, context):
                 f"\U0001f4cc Status: <b>{escape(e['status'])}</b>"
             )
     else:
-        lines.append("No member access recorded yet.")
+        lines.append("No member access recorded in the last 24 hours.")
 
     lines += ["", "<b>\U0001f517 Generated Links</b>"]
 
-    for r in generated:
-        lines.append(
-            f"{DEMO if r['link_type']=='DEMO' else PERM} "
-            f"{escape(r['channel_name'])} \u2014 "
-            f"<b>{escape(r['link_type'])}</b>\n"
-            f"\U0001f9d1\u200d\U0001f4bc Seller: {escape(r['admin_name'])} "
-            f"(<code>{r['admin_uid']}</code>)\n"
-            f"\U0001f552 {escape(r['created_at'])}"
-        )
+    if generated:
+        for r in generated:
+            lines.append(
+                f"{DEMO if r['link_type']=='DEMO' else PERM} "
+                f"{escape(r['channel_name'])} \u2014 "
+                f"<b>{escape(r['link_type'])}</b>\n"
+                f"\U0001f9d1\u200d\U0001f4bc Seller: {escape(r['admin_name'])} "
+                f"(<code>{r['admin_uid']}</code>)\n"
+                f"\U0001f552 {escape(r['created_at'])}"
+            )
+    else:
+        lines.append("No links generated in the last 24 hours.")
 
     report = "\n".join(lines)
     if len(report) > 3900:
@@ -1694,6 +2055,8 @@ async def records_callback(update, context):
     if not is_owner(q.from_user.id):
         await q.answer("Owner only.", show_alert=True)
         return
+
+    cleanup_old_reports()
 
     with db() as con:
         links = con.execute(
@@ -1755,6 +2118,42 @@ async def records_callback(update, context):
 
 
 # =========================================================
+# TEXT HELPERS
+# =========================================================
+def repair_mojibake(value):
+    """Return text as-is unless it is a common UTF-8/Latin-1 mojibake string."""
+    if value is None:
+        return ""
+    text = str(value)
+    if "Ã" in text or "Â" in text or "â" in text:
+        try:
+            fixed = text.encode("latin1").decode("utf-8")
+            return fixed
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+    return text
+
+
+def inline_course_keyboard(uid, channel_id):
+    buttons = []
+    if has_permission(uid, "demo"):
+        buttons.append(
+            InlineKeyboardButton(
+                f"{DEMO} Demo",
+                callback_data=f"inline_demo_{channel_id}",
+            )
+        )
+    if has_permission(uid, "perm"):
+        buttons.append(
+            InlineKeyboardButton(
+                f"{PERM} Permanent",
+                callback_data=f"inline_perm_{channel_id}",
+            )
+        )
+    return InlineKeyboardMarkup(rows_to_grid(buttons, 2))
+
+
+# =========================================================
 # INLINE SEARCH
 # =========================================================
 async def inline_search(update, context):
@@ -1762,9 +2161,7 @@ async def inline_search(update, context):
     uid = query.from_user.id
 
     if not is_admin(uid):
-        await query.answer(
-            [], cache_time=0, is_personal=True
-        )
+        await query.answer([], cache_time=0, is_personal=True)
         return
 
     term = (query.query or "").strip().lower()
@@ -1773,9 +2170,9 @@ async def inline_search(update, context):
         if term:
             rows = con.execute(
                 """
-                SELECT c.id,c.name,b.emoji
+                SELECT c.id, c.name, c.tg_id, b.emoji
                 FROM channels c
-                JOIN batches b ON b.id=c.batch_id
+                JOIN batches b ON b.id = c.batch_id
                 WHERE LOWER(c.name) LIKE ?
                 ORDER BY c.name COLLATE NOCASE
                 LIMIT 50
@@ -1785,9 +2182,9 @@ async def inline_search(update, context):
         else:
             rows = con.execute(
                 """
-                SELECT c.id,c.name,b.emoji
+                SELECT c.id, c.name, c.tg_id, b.emoji
                 FROM channels c
-                JOIN batches b ON b.id=c.batch_id
+                JOIN batches b ON b.id = c.batch_id
                 ORDER BY c.name COLLATE NOCASE
                 LIMIT 50
                 """
@@ -1795,29 +2192,19 @@ async def inline_search(update, context):
 
     results = []
 
-    for r in rows:
-        buttons = []
-
-        if has_permission(uid, "demo"):
-            buttons.append(InlineKeyboardButton(
-                f"{DEMO} Demo",
-                callback_data=f"inline_demo_{r['id']}"
-            ))
-
-        if has_permission(uid, "perm"):
-            buttons.append(InlineKeyboardButton(
-                f"{PERM} Permanent",
-                callback_data=f"inline_perm_{r['id']}"
-            ))
+    for row in rows:
+        course_name = repair_mojibake(row["name"]) or "Course"
+        tg_id = str(row["tg_id"] or "")
+        emoji = repair_mojibake(row["emoji"]) or BOOK
 
         results.append(
             InlineQueryResultArticle(
                 id=f"course_{row['id']}",
-                title=course_name,
-                description=f"ID: {row['tg_id']}",
+                title=f"{course_name}",
+                description=f"ID: {tg_id}",
                 input_message_content=InputTextMessageContent(
                     f"<b>{escape(course_name)}</b>\n"
-                    f"<code>ID: {escape(str(row['tg_id']))}</code>",
+                    f"<code>ID: {escape(tg_id)}</code>",
                     parse_mode=ParseMode.HTML,
                 ),
                 reply_markup=inline_course_keyboard(
@@ -1828,7 +2215,9 @@ async def inline_search(update, context):
         )
 
     await query.answer(
-        results, cache_time=0, is_personal=True
+        results,
+        cache_time=0,
+        is_personal=True,
     )
 
 
@@ -1861,22 +2250,45 @@ async def inline_link_callback(update, context):
             channel_id, link_type, uid, context.bot
         )
 
+        material_url = material_link_from_tg_id(ch["tg_id"])
+        material_line = (
+            f'📂 <a href="{escape(material_url)}">{escape(material_url)}</a>'
+            if material_url else
+            "📂 Material link unavailable for this channel."
+        )
+
         if link_type == "demo":
             text = (
-                f"{CHECK} <b>DEMO LINK</b>\n\n"
-                f"{BOOK} <b>{escape(ch['name'])}</b>\n"
-                f"\u23f1\ufe0f {get_demo_minutes()} minutes\n"
-                "\U0001f6ab Expire \u2192 Auto Remove \u2192 Auto Unban\n\n"
-                f'<a href="{escape(invite.invite_link)}">'
-                "\U0001f517 Open Demo Link</a>"
+                "🎓 <b>Access Granted: Demo Pass</b> ⏳\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🏢 <b>चैनल / कोर्स का नाम:</b>\n"
+                f"↪ <b>{escape(ch['name'])}</b>\n\n"
+                "📥 <b>यहाँ से ज्वाइन करें (Joining Link):</b>\n"
+                f'🔗 <a href="{escape(invite.invite_link)}">{escape(invite.invite_link)}</a>\n\n'
+                "🖥️ <b>कोर्स मैटेरियल यहाँ देखें (View Link):</b>\n"
+                f"{material_line}\n\n"
+                "📌 <b>महत्वपूर्ण निर्देश (Important):</b>\n"
+                "❝\n"
+                "⚠️ यह जॉइनिंग लिंक केवल 1 बार काम करेगा।\n"
+                f"⏱️ सिस्टम आपको चैनल में जुड़ने के ठीक <b>{get_demo_minutes()} मिनट</b> बाद "
+                "ऑटोमेटिक बाहर (Kick) कर देगा।\n"
+                "❞"
             )
         else:
             text = (
-                f"{CHECK} <b>PERMANENT LINK</b>\n\n"
-                f"{BOOK} <b>{escape(ch['name'])}</b>\n"
-                "\u267e\ufe0f Reusable Permanent Invite\n\n"
-                f'<a href="{escape(invite.invite_link)}">'
-                "\U0001f517 Open Permanent Link</a>"
+                "💎 <b>Access Granted: Permanent Pass</b> 💎\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🏢 <b>चैनल / कोर्स का नाम:</b>\n"
+                f"↪ <b>{escape(ch['name'])}</b>\n\n"
+                "📥 <b>यहाँ से ज्वाइन करें (Joining Link):</b>\n"
+                f'🔗 <a href="{escape(invite.invite_link)}">{escape(invite.invite_link)}</a>\n\n'
+                "🖥️ <b>कोर्स मैटेरियल यहाँ देखें (View Link):</b>\n"
+                f"{material_line}\n\n"
+                "📌 <b>महत्वपूर्ण निर्देश (Important):</b>\n"
+                "❝\n"
+                "🚫 यह Permanent Joining Link केवल एक बार के लिए है। ज्वाइन करते ही यह तुरंत Expire हो जाएगा।\n"
+                "✅ कृपया आगे से क्लास देखने के लिए हमेशा ऊपर दिए गए <b>'कोर्स मैटेरियल लिंक'</b> का ही उपयोग करें।\n"
+                "❞"
             )
 
         await q.answer()
@@ -1971,7 +2383,6 @@ async def delete_channel(update, context):
 
     await q.answer("Deleted.")
 
-    # Re-render category.
     q.data = f"batch_{batch_id}"
     await show_batch(update, context, batch_id)
 
@@ -2036,6 +2447,10 @@ async def callback_router(update, context):
     data = q.data
     uid = q.from_user.id
 
+    if data in ("home", "my_channels") and not is_admin(uid):
+        await q.answer()
+        return
+
     if not is_admin(uid):
         await q.answer()
         return
@@ -2043,8 +2458,8 @@ async def callback_router(update, context):
     if data == "home":
         await q.answer()
         await q.edit_message_text(
-            "\U0001f44b <b>\u092e\u0947\u0928 \u092e\u0947\u0928\u094d\u092f\u0942 (Main Menu):</b>\n\n"
-            "\u0905\u092a\u0928\u0947 \u0921\u0948\u0936\u092c\u094b\u0930\u094d\u0921 \u0915\u094b \u091a\u0932\u093e\u0928\u0947 \u0915\u0947 \u0932\u093f\u090f \u0928\u0940\u091a\u0947 \u0926\u093f\u090f \u0917\u090f \u092c\u091f\u0928 \u0926\u092c\u093e\u090f\u0901:",
+            "\U0001f44b <b>\u092e\u0928 \u092e\u0928\u094d\u092f\u0942 (Main Menu):</b>\n\n"
+            "\u0905\u092a\u0928\u0947 \u0921\u0948\u0936\u092c\u094b\u0930\u094d\u0921 \u0915\u094b \u091a\u0932\u093e\u0928\u0947 \u0915\u0947 \u0932\u093f\u090f \u0928\u0940\u091a\u0947 \u0926\u093f\u090f \u0917\u090f \u092c\u091f\u0928 \u0926\u092c\u093e\u090f\u0902:",
             reply_markup=home_keyboard(uid),
             parse_mode=ParseMode.HTML,
         )
@@ -2109,7 +2524,6 @@ async def callback_router(update, context):
 # MAIN
 # =========================================================
 async def post_init(application):
-    # Keep owner access commands hidden from Telegram's command menu.
     try:
         await application.bot.set_my_commands([])
     except Exception:
@@ -2128,6 +2542,9 @@ def main():
 
     init_db()
 
+    # Clean stale report data once at startup too.
+    cleanup_old_reports()
+
     app = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -2141,6 +2558,15 @@ def main():
             "python-telegram-bot[job-queue]."
         )
 
+    # Telegram report clock = India Standard Time.
+    try:
+        app.job_queue.scheduler.configure(timezone=REPORT_TZ)
+    except Exception:
+        try:
+            app.job_queue.scheduler.timezone = REPORT_TZ
+        except Exception:
+            log.exception("Could not set JobQueue timezone to Asia/Kolkata")
+
     # Expiry checker: every 10 seconds.
     # EXPIRE -> BAN/REMOVE -> 2 sec -> UNBAN.
     app.job_queue.run_repeating(
@@ -2149,15 +2575,30 @@ def main():
         first=5,
     )
 
+    # Daily owner report: exactly 07:00 Asia/Kolkata.
+    # Each report contains only the previous 07:00 -> 07:00 period.
+    app.job_queue.run_daily(
+        send_daily_report,
+        time=datetime.strptime("07:00", "%H:%M").time(),
+        days=(0, 1, 2, 3, 4, 5, 6),
+        name="daily_7am_report",
+    )
+
+    # Report cleanup: every 10 minutes.
+    # Anything older than 24 hours is removed automatically.
+    app.job_queue.run_repeating(
+        report_cleanup_job,
+        interval=600,
+        first=30,
+    )
+
     app.add_handler(CommandHandler("start", start))
 
-    # Hidden owner-only commands. Do NOT add these to set_my_commands.
     app.add_handler(CommandHandler("owner", owner_command))
     app.add_handler(CommandHandler("addsudo", addsudo_command))
     app.add_handler(CommandHandler("addsuper", addsuper_command))
     app.add_handler(CommandHandler("rmsudo", rmsudo_command))
 
-    # Legacy owner/admin entry + demo time.
     app.add_handler(CommandHandler("admin", start))
     app.add_handler(CommandHandler("demotime", demotime_command))
 
@@ -2249,14 +2690,14 @@ def main():
         fallbacks=[],
     ))
 
-    # General callbacks LAST.
     app.add_handler(
         CallbackQueryHandler(callback_router)
     )
 
     log.info(
-        "Bot started. Demo time=%s minutes",
-        get_demo_minutes()
+        "Bot started. Demo time=%s minutes; report retention=%s hours",
+        get_demo_minutes(),
+        REPORT_RETENTION_HOURS,
     )
 
     app.run_polling(
